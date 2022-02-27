@@ -1,9 +1,6 @@
 package com.namnd.springjwt.service;
 
 import com.namnd.springjwt.model.Role;
-import com.namnd.springjwt.model.User;
-
-import java.util.Optional;
 
 public interface RoleService {
 
