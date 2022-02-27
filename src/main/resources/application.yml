@@ -1,0 +1,45 @@
+server:
+  port: 8080
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+  datasource:
+    #link localhost
+    url: jdbc:postgresql://localhost:5432/testdb
+    username: postgres
+    password: 123456
+    platform: org.hibernate.dialect.PostgreSQLDialect
+
+  social:
+    facebook:
+      appId: 831265784439872
+      appSecret: d2d34c78730af03f1186d2b494efaca7
+
+  # App Properties
+namnd:
+  app:
+    jwtSecret: bezKoderSecretKey
+    jwtExpiration: 86400000
+
+
+logging:
+  level:
+    root: info
+    com.namnd.springjwt: debug
+    org:
+      springframework:
+        jdbc:
+          core:
+            JdbcTemplate: DEBUG
+            StatementCreatorUtils: TRACE
+      hibernate:
+        SQL: DEBUG
+        type:
+          descriptor:
+            sql:
+              BasicBinder: TRACE
