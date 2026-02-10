@@ -1,0 +1,645 @@
+# System Architecture
+
+**Project:** jwt-spring-security
+**Version:** 0.0.1-SNAPSHOT
+**Architecture Pattern:** Layered Architecture with JWT Authentication
+**Last Updated:** February 2026
+
+## Architecture Overview
+
+JWT Spring Security is built on a **layered architecture** with stateless JWT-based authentication. The system separates concerns into distinct layers: Presentation (REST), Business Logic (Service), Data Access (Repository), and Data Storage (Database).
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      CLIENT (Web/Mobile)                     │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ HTTP + JWT Bearer Token
+┌──────────────────────────▼──────────────────────────────────┐
+│                 PRESENTATION LAYER                           │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │         AuthController (@RestController)             │   │
+│  │  POST /api/auth/login                                │   │
+│  │  POST /api/auth/register                             │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                           ▲                                   │
+│                           │                                   │
+└───────────────────────────┼───────────────────────────────────┘
+                            │
+        ┌───────────────────┴───────────────────┐
+        │                                       │
+┌───────▼────────────────────────────────────┐ │
+│  SECURITY LAYER                            │ │
+│ ┌──────────────────────────────────────┐  │ │
+│ │  SecurityConfig                      │  │ │
+│ │  - Filter chain configuration        │  │ │
+│ │  - PasswordEncoder (BCrypt)          │  │ │
+│ │  - AuthenticationManager             │  │ │
+│ │  - CSRF disabled, CORS enabled       │  │ │
+│ └──────────────────────────────────────┘  │ │
+│ ┌──────────────────────────────────────┐  │ │
+│ │  JwtAuthenticationFilter             │  │ │
+│ │  - Extracts Bearer token             │  │ │
+│ │  - Validates JWT signature           │  │ │
+│ │  - Sets SecurityContext              │  │ │
+│ └──────────────────────────────────────┘  │ │
+│ ┌──────────────────────────────────────┐  │ │
+│ │  CustomAccessDeniedHandler           │  │ │
+│ │  - Returns 403 on access denied      │  │ │
+│ └──────────────────────────────────────┘  │ │
+└────────────────────────────────────────────┘ │
+                                               │
+┌──────────────────────────────────────────────▼─────┐
+│               BUSINESS LOGIC LAYER                   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  UserService (interface)                   │   │
+│  │  ├─ save(User)                             │   │
+│  │  ├─ findByUserName(String)                 │   │
+│  │  ├─ existsByUsername(String)               │   │
+│  │  └─ loadUserByUsername(String) [UserDetails]   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  UserServiceImpl                             │   │
+│  │  ├─ delegates to UserRepository             │   │
+│  │  └─ builds UserPrinciple for Security       │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  JwtService (@Component)                    │   │
+│  │  ├─ generateTokenLogin(Authentication)      │   │
+│  │  ├─ validateJwtToken(String)                │   │
+│  │  └─ getUserNameFromJwtToken(String)         │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  RoleService (interface)                    │   │
+│  │  ├─ save(Role)                              │   │
+│  │  ├─ findByName(String)                      │   │
+│  │  └─ flush()                                 │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  RoleServiceImpl                             │   │
+│  │  └─ delegates to RoleRepository              │   │
+│  └────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────┐
+│            DATA ACCESS LAYER (Repositories)         │
+│  ┌────────────────────────────────────────────┐   │
+│  │  UserRepository extends JpaRepository       │   │
+│  │  ├─ findByUsername(String)                 │   │
+│  │  └─ existsByUsername(String)               │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  RoleRepository extends JpaRepository       │   │
+│  │  └─ findByName(String)                     │   │
+│  └────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────┐
+│           DATA PERSISTENCE LAYER (Models)           │
+│  ┌────────────────────────────────────────────┐   │
+│  │  User (@Entity, table: users)               │   │
+│  │  ├─ id: Long (PK)                          │   │
+│  │  ├─ username: String (unique)              │   │
+│  │  ├─ password: String (BCrypt-encoded)      │   │
+│  │  ├─ fullName: String                       │   │
+│  │  └─ roles: Set<Role> (ManyToMany, EAGER)   │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  Role (@Entity, table: roles)               │   │
+│  │  ├─ id: Long (PK)                          │   │
+│  │  └─ name: String (ROLE_USER, etc)          │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  UserPrinciple (implements UserDetails)     │   │
+│  │  ├─ adapts User for Spring Security        │   │
+│  │  ├─ id, username, password, fullName       │   │
+│  │  ├─ authorities (from Role names)          │   │
+│  │  └─ account status methods (all true)      │   │
+│  └────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────┐
+│         DATABASE LAYER (PostgreSQL 13.1)            │
+│  ┌─────────────┐  ┌──────────┐  ┌────────────────┐ │
+│  │ users       │  │ roles    │  │ user_roles     │ │
+│  │ ─────────── │  │ ────────── │  │ ────────────── │ │
+│  │ id (PK)     │  │ id (PK)  │  │ user_id (FK)   │ │
+│  │ username    │  │ name     │  │ role_id (FK)   │ │
+│  │ password    │  │          │  │                │ │
+│  │ full_name   │  │          │  │                │ │
+│  └─────────────┘  └──────────┘  └────────────────┘ │
+└─────────────────────────────────────────────────────┘
+```
+
+## Request Flow Diagrams
+
+### Authentication Flow (Login)
+
+```
+CLIENT                           SERVER
+  │                                │
+  ├─ POST /api/auth/login ──────▶ AuthController.authenticateUser()
+  │  {username, password}          │
+  │                                ├─ AuthenticationManager.authenticate()
+  │                                │  ├─ UserServiceImpl.loadUserByUsername()
+  │                                │  │  └─ UserRepository.findByUsername()
+  │                                │  │     └─ Database Query
+  │                                │  │        ├─ Load User
+  │                                │  │        └─ Eager Load Roles
+  │                                │  │        └─ Return User
+  │                                │  ├─ PasswordEncoder.matches(inputPassword, userPassword)
+  │                                │  │  └─ BCrypt Verification
+  │                                │  └─ Return Authentication(UserPrinciple)
+  │                                │
+  │                                ├─ JwtService.generateTokenLogin()
+  │                                │  ├─ Extract username from UserPrinciple
+  │                                │  ├─ Build JWT Claims
+  │                                │  │  ├─ subject: username
+  │                                │  │  ├─ issuedAt: now
+  │                                │  │  └─ expiration: now + 24h
+  │                                │  ├─ Sign with HS512 + SECRET_KEY
+  │                                │  └─ Return JWT string
+  │                                │
+  │                                ├─ Load User from DB
+  │                                └─ Return JwtResponseDto
+  │
+  │ ◀─ 200 OK ─────────────────────┤
+  │  {token, username, roles, ...}  │
+  │                                 │
+  └─ Store token locally ───────────┘
+```
+
+### Request Authorization Flow
+
+```
+CLIENT                           SERVER
+  │                                │
+  ├─ GET /api/protected ──────────▶ JwtAuthenticationFilter
+  │  Authorization: Bearer <token>  │
+  │                                 ├─ Extract Authorization header
+  │                                 ├─ Parse Bearer token
+  │                                 │
+  │                                 ├─ JwtService.validateJwtToken()
+  │                                 │  ├─ Parse JWT signature
+  │                                 │  ├─ Verify HS512 with SECRET_KEY
+  │                                 │  └─ Check expiration
+  │                                 │     (no DB call for validation)
+  │                                 │
+  │                                 ├─ JwtService.getUserNameFromJwtToken()
+  │                                 │  └─ Extract username from claims
+  │                                 │
+  │                                 ├─ UserServiceImpl.loadUserByUsername()
+  │                                 │  └─ Load User + Roles from DB
+  │                                 │
+  │                                 ├─ Build UserPrinciple
+  │                                 ├─ Create SecurityContext
+  │                                 └─ Continue to Handler
+  │                                    │
+  │                                    ├─ Check @PreAuthorize annotations
+  │                                    ├─ Verify user has required role
+  │                                    │
+  │                                    └─ Execute endpoint
+  │
+  │ ◀─ 200 OK ─────────────────────┤
+  │  {protected resource data}      │
+  │
+  └─────────────────────────────────┘
+```
+
+### Registration Flow
+
+```
+CLIENT                              SERVER
+  │                                  │
+  ├─ POST /api/auth/register ───────▶ AuthController.registerUser()
+  │  {username, password,             │
+  │   fullName, roles}                │
+  │                                   ├─ Check username uniqueness
+  │                                   │  └─ UserService.existsByUsername()
+  │                                   │     └─ DB Query
+  │                                   │        └─ Return boolean
+  │                                   │
+  │                                   ├─ Process roles
+  │                                   │  ├─ For each role in request
+  │                                   │  │  ├─ RoleService.findByName()
+  │                                   │  │  │  └─ If not exists: save new role
+  │                                   │  │  └─ Set role ID from DB
+  │                                   │  └─ Transaction: flush
+  │                                   │
+  │                                   ├─ Map RegisterDto → User
+  │                                   │  ├─ RegisterDtoMapper.toEntity()
+  │                                   │  │  ├─ Copy username, fullName
+  │                                   │  │  ├─ PasswordEncoder.encode()
+  │                                   │  │  │  └─ BCrypt hash
+  │                                   │  │  └─ Copy roles
+  │                                   │  │     └─ Return User entity
+  │                                   │
+  │                                   ├─ UserService.save(user)
+  │                                   │  └─ UserRepository.save()
+  │                                   │     └─ DB INSERT (with FK to roles)
+  │                                   │
+  │                                   └─ Return success message
+  │
+  │ ◀─ 200 OK ──────────────────────┤
+  │  "User registered successfully!"  │
+  │
+  └─────────────────────────────────┘
+```
+
+## Data Model
+
+### Entity Relationships
+
+```
+┌──────────────────────┐         ┌──────────────────────┐
+│       users          │         │       roles          │
+├──────────────────────┤         ├──────────────────────┤
+│ id (PK, BIGSERIAL)   │         │ id (PK, BIGSERIAL)   │
+│ username (UNIQUE)    │         │ name (VARCHAR)       │
+│ password (VARCHAR)   │─────┬──▶│ └─ "ROLE_USER"       │
+│ full_name (VARCHAR)  │     │   │ └─ "ROLE_PM"         │
+│ ◀─────────────────────┤ M:M │   │ └─ "ROLE_ADMIN"      │
+└──────────────────────┘     │   └──────────────────────┘
+        ▲                    │
+        │ FK                 │
+        └────────────────────┘
+         (through user_roles)
+
+┌──────────────────────────┐
+│      user_roles          │
+├──────────────────────────┤
+│ user_id (FK to users)    │
+│ role_id (FK to roles)    │
+│ (PK: user_id, role_id)   │
+└──────────────────────────┘
+```
+
+### Security Context Representation
+
+After successful login, SecurityContext contains:
+```
+SecurityContext
+├─ Authentication
+│  ├─ principal: UserPrinciple
+│  │  ├─ id: 1
+│  │  ├─ username: "john"
+│  │  ├─ password: "$2a$10$..." (BCrypt hash)
+│  │  ├─ fullName: "John Doe"
+│  │  └─ authorities: [GrantedAuthority("ROLE_USER"), GrantedAuthority("ROLE_PM")]
+│  ├─ credentials: password (not stored after auth)
+│  ├─ isAuthenticated: true
+│  └─ details: WebAuthenticationDetails
+│     └─ remoteAddress: client IP
+└─ (No Session - Stateless JWT)
+```
+
+## JWT Token Structure
+
+### HS512 Token Anatomy
+
+```
+eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJqb2huIiwiaWF0IjoxNjM4MzYwMDAwLCJleHAiOjE2MzgzNjAwMDB9.signature...
+┌─────────────────────┬─────────────────────────────────────────────┬──────┐
+│      HEADER         │               PAYLOAD                        │ SIGN │
+└─────────────────────┴─────────────────────────────────────────────┴──────┘
+
+HEADER (Base64URL-decoded):
+{
+  "alg": "HS512",
+  "typ": "JWT"
+}
+
+PAYLOAD (Base64URL-decoded):
+{
+  "sub": "john",                    // username
+  "iat": 1638360000,                // issued at (seconds)
+  "exp": 1638446400                 // expiration (24h later)
+}
+
+SIGNATURE:
+HMACSHA512(
+  BASE64URL(HEADER) + "." + BASE64URL(PAYLOAD),
+  "bezKoderSecretKey"
+)
+```
+
+**Token Lifecycle:**
+1. Generated at login with 24h expiration
+2. Sent to client in response
+3. Client stores token (localStorage, sessionStorage, HttpOnly cookie)
+4. Client sends in Authorization header: `Bearer <token>`
+5. Server validates signature & expiration on each request
+6. Token expires after 24h (requires re-login)
+7. No refresh mechanism (requires fresh login)
+
+## Component Interactions
+
+### Spring Security Filter Chain
+
+```
+Client Request
+    ↓
+Security Filter Chain
+    ↓
+┌─────────────────────────────────────────────────────────────┐
+│  SPRING SECURITY FILTER CHAIN                                │
+├─────────────────────────────────────────────────────────────┤
+│  1. FilterSecurityInterceptor (method-level @PreAuthorize)  │
+│     └─ Checks role requirements                              │
+│  2. ExceptionTranslationFilter (handles auth errors)         │
+│     └─ Converts exceptions to HTTP responses                │
+│  3. CustomAccessDeniedHandler (custom exception handler)     │
+│     └─ Returns 403 JSON on access denied                     │
+│  4. JwtAuthenticationFilter (custom, added before #5)        │
+│     └─ Extracts & validates JWT, sets SecurityContext       │
+│  5. UsernamePasswordAuthenticationFilter (for login POST)    │
+│     └─ Authenticates username/password                       │
+│  6. BasicAuthenticationFilter (HTTP Basic, disabled here)    │
+│  7. CSRF Protection Filter (disabled for JWT API)            │
+│  8. CORS Filter (enabled)                                    │
+│  9. SessionManagementFilter (creates session if needed)      │
+│     └─ Disabled here (STATELESS policy)                      │
+└─────────────────────────────────────────────────────────────┘
+    ↓
+DispatcherServlet
+    ↓
+Controller Handler
+    ↓
+Response
+```
+
+**Custom Configuration in SecurityConfig:**
+```java
+http.authorizeRequests()
+    .antMatchers("/api/auth/**").permitAll()  // Public endpoints
+    .anyRequest().authenticated()              // All others require auth
+
+http.addFilterBefore(
+    jwtAuthenticationFilter(),
+    UsernamePasswordAuthenticationFilter.class
+)  // Add JWT filter before standard filter
+
+http.sessionManagement()
+    .sessionCreationPolicy(SessionCreationPolicy.STATELESS)  // No sessions
+
+http.cors()  // Enable CORS
+```
+
+## Deployment Architecture
+
+### Docker Compose Setup
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  DOCKER HOST                             │
+├─────────────────────────────────────────────────────────┤
+│                                                           │
+│  ┌──────────────────┐          ┌────────────────────┐   │
+│  │ postgres-service │          │ ms-authentication- │   │
+│  │ (postgres:13.1)  │          │ service (built)     │   │
+│  │                  │          │                    │   │
+│  │ Port: 5432       │          │ Port: 8080          │   │
+│  │ Env:             │          │ Base: openjdk:11    │   │
+│  │ POSTGRES_USER    │          │ COPY spring-jwt.jar │   │
+│  │ POSTGRES_PASSWORD│          │ CMD: java -jar      │   │
+│  │                  │          │                    │   │
+│  │ Volume:          │◀────────▶│ depends_on:         │   │
+│  │ /docker/volumes/ │ network  │ postgres-service    │   │
+│  │                  │ (my-net) │                    │   │
+│  └──────────────────┘          └────────────────────┘   │
+│         ▲                                   ▲             │
+│         └───────────────────────────────────┘             │
+│              Network Bridge (my-net)                      │
+│                                                           │
+└─────────────────────────────────────────────────────────┘
+     ▲                                          ▲
+     │                                          │
+     │ Port 5432 (PostgreSQL)                   │ Port 8080 (HTTP)
+     │ (localhost:5432)                         │ (localhost:8080)
+     │                                          │
+HOST MACHINE
+```
+
+### Runtime Environment
+
+```
+┌────────────────────────────────────────┐
+│     Docker Container                   │
+│  (ms-authentication-service)           │
+├────────────────────────────────────────┤
+│  OpenJDK 11                             │
+│  ├─ Java Heap Memory: configurable      │
+│  ├─ GC: G1GC (default)                  │
+│  └─ JVM args: customizable              │
+│                                         │
+│  Spring Boot Application                │
+│  ├─ Embedded Tomcat (port 8080)         │
+│  ├─ Spring Boot: 2.6.4                  │
+│  ├─ Spring Security: configured         │
+│  └─ Logging: stdout/stderr              │
+│                                         │
+│  Application Properties                 │
+│  ├─ JWT Secret: bezKoderSecretKey       │
+│  ├─ JWT Expiration: 86400000ms (24h)    │
+│  ├─ Database: PostgreSQL (via network)  │
+│  └─ CORS: enabled for all origins       │
+└────────────────────────────────────────┘
+        ▲
+        │ DB Connection Pool
+        │ (HikariCP default)
+        ▼
+PostgreSQL Container
+```
+
+## Security Architecture
+
+### Authentication Mechanisms
+
+| Mechanism | Implementation | Purpose |
+|-----------|-----------------|---------|
+| Password Encoding | BCryptPasswordEncoder | Secure password storage |
+| JWT Generation | JJWT 0.9.0 HS512 | Token-based auth |
+| Token Validation | JJWT parser | Signature & expiration verification |
+| Authorization | Spring Security @PreAuthorize | Role-based access control |
+| Session Management | STATELESS | No server-side session storage |
+
+### Security Boundaries
+
+```
+┌─────────────────────────────────────────────────────┐
+│  PUBLIC ZONE                                         │
+│  ┌─────────────────────────────────────────────┐   │
+│  │ POST /api/auth/login   (no auth required)   │   │
+│  │ POST /api/auth/register (no auth required)  │   │
+│  └─────────────────────────────────────────────┘   │
+└──────────────────────┬──────────────────────────────┘
+                       │ Client obtains JWT token
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│  PROTECTED ZONE                                       │
+│  ┌───────────────────────────────────────────────┐  │
+│  │ All other endpoints require:                  │  │
+│  │ 1. Authorization: Bearer <token> header       │  │
+│  │ 2. Valid token signature (HS512)              │  │
+│  │ 3. Token not expired                          │  │
+│  │ 4. @PreAuthorize role checks                  │  │
+│  └───────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────┘
+```
+
+### Potential Security Improvements
+
+1. **Token Refresh:** Implement refresh tokens (longer-lived tokens for obtaining new access tokens)
+2. **Token Revocation:** Maintain revocation list (blacklist/whitelist) for logout functionality
+3. **Rate Limiting:** Add rate limiter on /api/auth/login to prevent brute force
+4. **Audit Logging:** Log all authentication attempts with IP, timestamp, success/failure
+5. **HTTPS Only:** Enforce HTTPS in production (JWT in Authorization header, not cookies)
+6. **Secret Management:** Use vault service (HashiCorp Vault, AWS Secrets Manager) instead of config file
+7. **Algorithm Upgrade:** Upgrade JJWT to 0.12.x for newer JWT standards compliance
+8. **Asymmetric Keys:** Consider RS256 for distributed systems where multiple services validate tokens
+
+## Scaling Considerations
+
+### Horizontal Scaling
+
+Current design supports horizontal scaling:
+- **Stateless JWT:** No session affinity required
+- **Shared JWT Secret:** All instances use same jwtSecret from config
+- **Database-Backed:** PostgreSQL handles concurrent connections (connection pooling)
+- **No Local Cache:** Token validation doesn't require distributed cache
+
+**Deployment:**
+```
+┌─────────┐
+│ Load    │
+│ Balancer│
+└────┬────┘
+     │
+  ┌──┴──┐
+  │     │
+┌─┴─┐ ┌┴──┐
+│API│ │API│  (multiple instances)
+│ 1 │ │ 2 │  (all share same jwtSecret)
+└─┬─┘ └┬──┘  (all connect to same DB)
+  │     │
+  └─────┴─────────→ PostgreSQL
+```
+
+### Performance Characteristics
+
+| Operation | Latency | Bottleneck |
+|-----------|---------|-----------|
+| Login (authenticate + generate token) | ~100-200ms | Database query for user |
+| Token Validation (on each request) | ~5-10ms | JWT parsing/signature check (no DB) |
+| Register (create user + roles) | ~150-300ms | Multiple DB transactions |
+| Authorization Check (@PreAuthorize) | ~1-2ms | In-memory role lookup |
+
+**Optimization Opportunities:**
+- Implement user cache (Redis) to reduce DB queries on loadUserByUsername
+- Use connection pooling (HikariCP default)
+- Add database indexes on username, role name
+- Consider JWT caching with signature validation skipping (risky)
+
+## Monitoring & Observability
+
+### Logging Strategy
+
+| Component | Log Level | Information |
+|-----------|-----------|-------------|
+| JwtService | DEBUG | Token validation failures, claim extraction |
+| AuthController | INFO | Login/register attempts |
+| SecurityConfig | DEBUG | Filter chain configuration |
+| Hibernate | DEBUG | SQL queries, transaction details |
+| Application | DEBUG | Custom business logic |
+
+### Health Checks (Future)
+
+```
+GET /actuator/health
+{
+  "status": "UP",
+  "components": {
+    "db": {"status": "UP"},
+    "diskSpace": {"status": "UP"},
+    "livenessState": {"status": "UP"},
+    "readinessState": {"status": "UP"}
+  }
+}
+```
+
+### Metrics (Future)
+
+Suggested metrics to track:
+- Login success/failure rate
+- Token validation success/failure rate
+- Average response time per endpoint
+- Database connection pool utilization
+- JWT signature verification failures (potential attacks)
+- Unauthorized access attempts (403 responses)
+
+## Technology Stack Summary
+
+| Layer | Technology | Version | Role |
+|-------|-----------|---------|------|
+| Framework | Spring Boot | 2.6.4 | Application container |
+| Security | Spring Security | via Boot | Authentication/Authorization |
+| ORM | Spring Data JPA | via Boot | Object-relational mapping |
+| JWT | JJWT | 0.9.0 | Token generation/validation |
+| Password Hash | BCrypt | via Spring | Secure password encoding |
+| Database | PostgreSQL | 13.1+ | Data persistence |
+| Container | Docker | latest | Deployment container |
+| Runtime | OpenJDK | 11 | Java runtime |
+
+## Dependency Graph
+
+```
+Application
+├─ Spring Boot Core
+│  ├─ Spring Security
+│  │  └─ Spring Core (AOP, DI)
+│  ├─ Spring Data JPA
+│  │  └─ Hibernate
+│  │     └─ PostgreSQL Driver
+│  ├─ Spring Web (MVC, REST)
+│  │  └─ Embedded Tomcat
+│  └─ Logging (SLF4J → Log4j2)
+│
+├─ JJWT
+│  └─ Jackson (JSON parsing)
+│
+├─ Lombok (annotation processor)
+│
+└─ PostgreSQL Driver
+   └─ JDBC
+```
+
+## Architecture Decisions Rationale
+
+| Decision | Chosen | Rationale | Trade-off |
+|----------|--------|-----------|-----------|
+| Stateless vs Sessions | Stateless JWT | Microservices-ready, no server state | Larger token, can't invalidate early |
+| HS512 vs RS256 | HS512 | Simpler operations, all servers share secret | Less secure for distributed trust |
+| Eager vs Lazy Roles | Eager | Roles needed in SecurityContext immediately | Always loads roles even if unused |
+| Manual vs Auto Schema | Manual | Version control, database as source of truth | Extra maintenance burden |
+| Single DB vs Sharding | Single | Simpler for now, YAGNI principle | Scalability ceiling at DB level |
+
+## Future Architecture Evolution
+
+### Phase 2: Microservices-Ready
+- Extract as library/service
+- Add OpenAPI/Swagger documentation
+- Implement rate limiting middleware
+- Add audit logging service
+
+### Phase 3: Enterprise Features
+- Multi-tenancy support
+- Advanced role model (permissions, resource-based)
+- Token refresh mechanism
+- OAuth2/SAML integration
+- Distributed tracing (Jaeger, Zipkin)
+
+### Phase 4: Cloud-Native
+- Kubernetes deployment manifests
+- ConfigMap for secrets management
+- Health checks & readiness probes
+- Metrics export (Prometheus)
+- Centralized logging (ELK/Splunk)
