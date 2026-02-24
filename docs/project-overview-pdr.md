@@ -22,18 +22,38 @@ JWT Spring Security is a Spring Boot-based REST API providing stateless authenti
 ## Functional Requirements
 
 ### Authentication (FR-001)
-- **User Login:** Accept username/password, validate credentials, return JWT token
+- **User Login:** Accept username/password, validate credentials, return JWT tokens
   - Accept JSON payload with username, password
   - Authenticate via Spring AuthenticationManager
-  - Generate HS512-signed JWT with 24h expiration
-  - Return token + user metadata in JwtResponseDto
+  - Generate HS512-signed access token (15-min expiration) with unique JTI
+  - Generate refresh token (7-day expiration)
+  - Return both tokens + user metadata in JwtResponseDto
 
 - **User Registration:** Accept registration data, create user with roles
-  - Accept JSON with username, password, fullName, roles array
+  - Accept JSON with username, email (required), password, fullName, roles array
   - Validate username uniqueness
+  - Validate email uniqueness and required
   - Encode password via BCrypt
   - Create roles if new, assign existing roles by ID
   - Persist User entity with role associations
+
+- **Token Refresh:** Accept refresh token, return new token pair
+  - Accept JSON with refreshToken
+  - Validate refresh token exists and not expired
+  - Generate new access token with new JTI
+  - Rotate refresh token (delete old, create new)
+  - Return new token pair in TokenRefreshResponseDto
+
+- **Password Reset:** Email-driven password reset flow
+  - Forgot Password: Accept email, generate 24-hour reset token, send email
+  - Reset Password: Accept reset token + new password, validate token, update password
+  - Security: Returns generic message regardless of email existence
+
+- **Logout:** Blacklist token and delete refresh token
+  - Accept Authorization header with access token
+  - Extract and blacklist JTI with expiration date
+  - Delete user's refresh token from database
+  - Scheduled cleanup: hourly job removes expired blacklist entries
 
 ### Authorization (FR-002)
 - **Token Validation:** Validate JWT on protected requests
@@ -63,8 +83,14 @@ JWT Spring Security is a Spring Boot-based REST API providing stateless authenti
 ### Security (NFR-001)
 - **Password Encoding:** BCrypt with Spring Security encoder
 - **JWT Signing:** HMAC SHA-512 (HS512) algorithm
-- **Token Expiration:** 24 hours (86400000 ms, configurable)
+- **Access Token Expiration:** 15 minutes (900000 ms, configurable)
+- **Refresh Token Expiration:** 7 days (604800000 ms, configurable)
+- **Token Rotation:** Refresh token replaced on each use
+- **Token Revocation:** JTI-based blacklisting for logout
+- **Email Validation:** Required unique email on registration
+- **Password Reset:** 24-hour expiration tokens via secure email
 - **Session Management:** Stateless (SessionCreationPolicy.STATELESS)
+- **Scheduled Cleanup:** Hourly job cleans expired blacklist entries
 - **CSRF Protection:** Disabled for JWT API (appropriate)
 - **CORS:** Enabled for all origins (configurable)
 
@@ -134,7 +160,7 @@ Response (200 OK):
 {
   "id": 1,
   "token": "eyJhbGciOiJIUzUxMiJ9...",
-  "type": "Bearer",
+  "refreshToken": "eyJhbGciOiJIUzUxMiJ9...",
   "username": "john",
   "name": "John Doe",
   "roles": ["ROLE_USER", "ROLE_PM"]
@@ -142,10 +168,7 @@ Response (200 OK):
 ```
 
 Error (401 Unauthorized):
-- Invalid credentials
-
-Error (BadCredentialsException):
-- Username not found, password mismatch
+- Invalid credentials, username not found, or password mismatch
 
 ### Register Endpoint
 **POST /api/auth/register**
@@ -157,6 +180,7 @@ Request:
 ```json
 {
   "username": "jane",
+  "email": "jane@example.com",
   "password": "secure123",
   "fullName": "Jane Doe",
   "roles": [
@@ -171,17 +195,97 @@ Response (200 OK):
 ```
 
 Error (400 Bad Request):
-- Username already taken
-- Missing required fields
+- Username already taken, email in use, or email required
+
+### Forgot Password Endpoint
+**POST /api/auth/forgot-password**
+- Consumes: application/json
+- Produces: application/json
+- Auth: None (public)
+
+Request:
+```json
+{
+  "email": "jane@example.com"
+}
+```
+
+Response (200 OK):
+```
+"If the email exists, a password reset link has been sent."
+```
+
+### Reset Password Endpoint
+**POST /api/auth/reset-password**
+- Consumes: application/json
+- Produces: application/json
+- Auth: None (token-based)
+
+Request:
+```json
+{
+  "token": "reset-token-from-email",
+  "newPassword": "newSecure123"
+}
+```
+
+Response (200 OK):
+```
+"Password reset successful."
+```
+
+Error (400 Bad Request):
+- Invalid, expired, or already-used reset token
+
+### Refresh Token Endpoint
+**POST /api/auth/refresh-token**
+- Consumes: application/json
+- Produces: application/json
+- Auth: None (refresh token-based)
+
+Request:
+```json
+{
+  "refreshToken": "eyJhbGciOiJIUzUxMiJ9..."
+}
+```
+
+Response (200 OK):
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzUxMiJ9...",
+  "refreshToken": "eyJhbGciOiJIUzUxMiJ9..."
+}
+```
+
+Error (400 Bad Request):
+- Invalid or expired refresh token
+
+### Logout Endpoint
+**POST /api/auth/logout**
+- Consumes: (none)
+- Produces: application/json
+- Auth: JWT Bearer token required
+- Header: `Authorization: Bearer <accessToken>`
+
+Response (200 OK):
+```
+"Logged out successfully."
+```
+
+Error (400 Bad Request):
+- No token provided
+- Invalid token
 
 ### Protected Endpoint Example
 **GET /api/protected** (or any non-auth endpoint)
 - Auth: JWT Bearer token required
-- Header: `Authorization: Bearer <token>`
+- Header: `Authorization: Bearer <accessToken>`
 
 Response (401 Unauthorized):
 - Missing/invalid token
-- Token expired
+- Token expired (15 min) - use refresh endpoint
+- Token blacklisted (logged out) - re-login required
 - Invalid signature
 
 Response (403 Forbidden):
@@ -190,9 +294,9 @@ Response (403 Forbidden):
 ## Architecture Decisions
 
 ### Decision: Stateless JWT vs Session-Based
-**Chosen:** Stateless JWT
-- **Rationale:** Microservices-friendly, horizontal scaling, no server state management
-- **Trade-off:** Larger token size vs reduced database load on auth validation
+**Chosen:** Stateless JWT with Refresh Tokens
+- **Rationale:** Microservices-friendly, horizontal scaling, no server state for access tokens
+- **Trade-off:** Larger token size vs reduced database load; refresh tokens stored in DB for revocation
 
 ### Decision: Symmetric (HS512) vs Asymmetric (RS256) Signing
 **Chosen:** Symmetric HS512
@@ -205,42 +309,65 @@ Response (403 Forbidden):
 - **Trade-off:** Always loads roles even if not needed vs N+1 queries
 
 ### Decision: Manual Schema vs Hibernate DDL
-**Chosen:** Manual (ddl-auto: none)
+**Chosen:** Manual (ddl-auto: none, create-drop for dev)
 - **Rationale:** Database as source of truth, version control flexibility
 - **Trade-off:** Extra maintenance vs schema evolution control
 
+### Decision: Token Revocation Strategy
+**Chosen:** JTI-based Blacklist with Scheduled Cleanup
+- **Rationale:** Efficient revocation without modifying JWT claims, scheduled cleanup prevents table bloat
+- **Trade-off:** Database lookup on validation vs complete logout support
+
+### Decision: Refresh Token Rotation
+**Chosen:** Replace token on each refresh
+- **Rationale:** Limits window of exposure if refresh token compromised
+- **Trade-off:** Database updates on refresh vs reduced breach impact
+
+### Decision: Password Reset Delivery
+**Chosen:** Email-based with stateful tokens
+- **Rationale:** Secure, auditable, familiar to users
+- **Trade-off:** Requires SMTP config vs alternative delivery methods
+
 ## Roadmap
 
-### Phase 1: Foundation (Current)
+### Phase 1: Foundation (COMPLETE)
 - ✓ Core authentication (login/register)
-- ✓ JWT generation & validation
+- ✓ JWT generation & validation with JTI
 - ✓ Role-based authorization
 - ✓ PostgreSQL persistence
 - ✓ Docker containerization
 - ✓ Basic testing
 
-### Phase 2: Enhancement (Planned)
-- [ ] Token refresh mechanism
+### Phase 2: Token Management (COMPLETE)
+- ✓ Token refresh mechanism with rotation
+- ✓ Password reset flow via email
+- ✓ Logout with token blacklisting
+- ✓ Scheduled cleanup of expired tokens
+- ✓ Email validation on registration
+
+### Phase 3: Enhancement (Planned)
 - [ ] User profile endpoints (GET /api/users/me)
-- [ ] Password reset flow
-- [ ] Email verification on register
+- [ ] Email verification (confirmation link)
 - [ ] Rate limiting on login endpoint
 - [ ] OAuth2/social login integration
+- [ ] Two-factor authentication (SMS/authenticator)
+- [ ] Account lockout after N failed attempts
 
-### Phase 3: Security Hardening (Planned)
+### Phase 4: Security Hardening (Planned)
 - [ ] Add JWT claim validation (issuer, audience)
-- [ ] Implement rate limiting
-- [ ] Add request signing (for sensitive operations)
 - [ ] Audit logging on sensitive actions
+- [ ] Request signing for sensitive operations
 - [ ] IP whitelisting
-- [ ] Two-factor authentication
+- [ ] Token encryption at rest
+- [ ] Secret rotation mechanism
 
-### Phase 4: Operations (Planned)
+### Phase 5: Operations (Planned)
 - [ ] Health check endpoint (/actuator/health)
 - [ ] Metrics collection (Micrometer)
 - [ ] Centralized logging (ELK stack integration)
 - [ ] CI/CD pipeline (GitHub Actions)
 - [ ] Load testing & performance optimization
+- [ ] Kubernetes deployment manifests
 
 ## Dependencies
 
@@ -294,10 +421,29 @@ Response (403 Forbidden):
 
 **And** user without ROLE_ADMIN accessing same endpoint gets 403 Forbidden
 
+## Implementation Notes
+
+### Email Configuration
+- Uses Spring Mail with Gmail SMTP (smtp.gmail.com:587)
+- Requires environment variables:
+  - MAIL_USERNAME: Gmail address
+  - MAIL_PASSWORD: App-specific password (not account password)
+- passwordResetBaseUrl: Configure for frontend redirect after email click
+
+### Database Changes
+- Added columns to users: email (UNIQUE)
+- New tables: refresh_tokens, password_reset_tokens, blacklisted_tokens
+- Recommend running schema migrations for production
+
+### Scheduled Tasks
+- JwtService.cleanupExpiredBlacklistedTokens() runs hourly
+- Removes entries where expiryDate < now
+- Prevents unbounded growth of blacklist table
+
 ## Open Questions
 
-1. **Token Refresh:** Should API support refresh tokens? (Currently no refresh mechanism)
-2. **Token Revocation:** How to invalidate tokens before expiration? (Currently no revocation list)
-3. **Multi-tenancy:** Future support for multiple organizations?
-4. **API Versioning:** How to version endpoints (v1/v2)?
-5. **Rate Limiting:** Should login endpoint have rate limiting to prevent brute force?
+1. **Multi-tenancy:** Future support for multiple organizations?
+2. **API Versioning:** How to version endpoints (v1/v2)?
+3. **Rate Limiting:** Should login endpoint have rate limiting to prevent brute force?
+4. **Email Delivery:** Use service like SendGrid/Mailgun instead of SMTP?
+5. **Token Revocation TTL:** Should whitelist instead of blacklist for shorter-lived tokens?

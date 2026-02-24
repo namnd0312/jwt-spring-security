@@ -2,8 +2,8 @@
 
 **Project:** jwt-spring-security
 **Generated:** February 2026
-**Total Java Files:** 19 (main) + 1 (test)
-**Total Lines of Code (approx):** ~2,500 LOC
+**Total Java Files:** 38 (main) + 1 (test)
+**Total Lines of Code (approx):** ~4,200 LOC
 
 ## Directory Structure
 
@@ -102,33 +102,81 @@ jwt-spring-security/
 
 ### 3. REST Controller
 
-**AuthController.java** (96 lines)
+**AuthController.java** (~197 lines)
 - Route: `/api/auth`
 - Annotations: @CrossOrigin(origins="*", maxAge=3600), @RestController, @RequestMapping
 - **Endpoints:**
   - **POST /login** (accepts User, returns JwtResponseDto)
-    - Calls authenticationManager.authenticate()
-    - Generates token via JwtService
-    - Loads user from database
-    - Returns id, token, type, username, name, roles
+    - Authenticates via AuthenticationManager
+    - Generates access token + refresh token
+    - Returns id, token, refreshToken, username, name, roles
   - **POST /register** (accepts RegisterDto, returns String)
-    - Validates username uniqueness
-    - Iterates roles: saves new, reuses existing by ID
-    - Maps RegisterDto to User via RegisterDtoMapper
+    - Validates username & email uniqueness
+    - Validates email required field
+    - Encodes password, creates/assigns roles
     - Saves user via UserService
-    - Returns success message
+  - **POST /forgot-password** (accepts ForgotPasswordDto)
+    - Generates password reset token
+    - Sends reset link via email
+    - Returns generic success message (security)
+  - **POST /reset-password** (accepts ResetPasswordDto)
+    - Validates reset token expiration
+    - Encodes new password
+    - Updates user password
+  - **POST /refresh-token** (accepts RefreshTokenRequestDto)
+    - Validates refresh token existence & expiration
+    - Generates new access token
+    - Rotates refresh token (creates new one)
+  - **POST /logout** (requires Bearer token)
+    - Extracts JWT and JTI
+    - Blacklists JTI with expiration date
+    - Deletes user's refresh token
 
 ### 4. Data Models
 
-**User.java** (29 lines)
+**User.java** (~35 lines)
 - @Entity, @Data (Lombok)
 - **Table:** users
 - **Columns:**
   - id (BIGSERIAL, GenerationType.IDENTITY)
-  - username (String)
+  - username (String, unique)
+  - email (String, unique)
   - password (String, BCrypt-encoded)
   - fullName (String)
   - roles (Set<Role>, ManyToMany eager, JoinTable user_roles)
+
+**RefreshToken.java** (~30 lines)
+- @Entity, @Data (Lombok)
+- **Table:** refresh_tokens
+- **Columns:**
+  - id (BIGSERIAL)
+  - token (String, unique)
+  - expiryDate (LocalDateTime)
+  - user (User, ManyToOne)
+- **Methods:**
+  - isExpired() - checks if token past expiration
+
+**PasswordResetToken.java** (~30 lines)
+- @Entity, @Data (Lombok)
+- **Table:** password_reset_tokens
+- **Columns:**
+  - id (BIGSERIAL)
+  - token (String, unique)
+  - expiryDate (LocalDateTime)
+  - user (User, ManyToOne)
+- **Methods:**
+  - isExpired() - checks token validity
+
+**BlacklistedToken.java** (~25 lines)
+- @Entity, @Data (Lombok)
+- **Table:** blacklisted_tokens
+- **Columns:**
+  - id (BIGSERIAL)
+  - jti (String, unique) - JWT ID claim
+  - expiryDate (LocalDateTime)
+
+**TokenType.java** (enum)
+- ACCESS, REFRESH - discriminator for token types
 
 **Role.java** (~20 lines)
 - @Entity, @Data (Lombok)
@@ -151,34 +199,90 @@ jwt-spring-security/
 
 ### 5. Data Transfer Objects
 
-**JwtResponseDto.java** (~40 lines)
-- **Fields:** id (Long), token (String), type (String = "Bearer"), username (String), name (String), roles (Collection<? extends GrantedAuthority>)
+**JwtResponseDto.java** (~45 lines)
+- **Fields:** id (Long), token (String), refreshToken (String), username (String), name (String), roles (Collection<? extends GrantedAuthority>)
 - **Purpose:** Response payload for login endpoint
 
-**RegisterDto.java** (~30 lines)
-- **Fields:** username (String), password (String), fullName (String), roles (Set<Role>)
-- **Purpose:** Request payload for register endpoint
+**RegisterDto.java** (~35 lines)
+- **Fields:** username (String), email (String), password (String), fullName (String), roles (Set<Role>)
+- **Purpose:** Request payload for register endpoint (email now required)
+
+**ForgotPasswordDto.java** (~15 lines)
+- **Fields:** email (String)
+- **Purpose:** Request payload for password reset initiation
+
+**ResetPasswordDto.java** (~20 lines)
+- **Fields:** token (String), newPassword (String)
+- **Purpose:** Request payload for password reset completion
+
+**RefreshTokenRequestDto.java** (~15 lines)
+- **Fields:** refreshToken (String)
+- **Purpose:** Request payload for token refresh
+
+**TokenRefreshResponseDto.java** (~20 lines)
+- **Fields:** accessToken (String), refreshToken (String)
+- **Purpose:** Response payload for token refresh endpoint
 
 **RegisterDtoMapper.java** (~40 lines)
 - Maps RegisterDto → User entity
 - Encodes password via PasswordEncoder (BCrypt)
-- Copies username, password (encoded), fullName, roles
+- Copies username, email, password (encoded), fullName, roles
 
 ### 6. Services
 
-**JwtService.java** (61 lines)
-- @Component
-- Injected: @Value("${namnd.app.jwtSecret}"), @Value("${namnd.app.jwtExpiration}")
+**JwtService.java** (~120 lines)
+- @Component, @EnableScheduling
+- Injected: @Value("${namnd.app.jwtSecret}"), @Value("${namnd.app.jwtExpiration}"), @Value("${namnd.app.jwtRefreshExpiration}")
 - **Methods:**
-  - `generateTokenLogin(Authentication)` - Generates HS512 token
-    - Subject: username from UserPrinciple
-    - Expiration: now + EXPIRE_TIME * 1000 (ms)
-    - SignatureAlgorithm.HS512 with SECRET_KEY
-  - `validateJwtToken(String authToken)` - Returns boolean
-    - Attempts to parse token
-    - Catches & logs exceptions: SignatureException, MalformedJwtException, ExpiredJwtException, UnsupportedJwtException, IllegalArgumentException
-  - `getUserNameFromJwtToken(String token)` - Extracts subject (username)
-    - Parses token, returns getBody().getSubject()
+  - `generateTokenLogin(Authentication)` - Generates 15-min access token with JTI
+  - `generateTokenFromUsername(String)` - Generates access token from username
+  - `validateJwtToken(String)` - Validates signature & expiration
+  - `validateJwtTokenWithBlacklist(String)` - Validates & checks blacklist
+  - `getUserNameFromJwtToken(String)` - Extracts username claim
+  - `getJtiFromToken(String)` - Extracts JTI (JWT ID) claim
+  - `getExpirationFromToken(String)` - Extracts expiration date
+- **Scheduled Tasks:**
+  - `cleanupExpiredBlacklistedTokens()` - Runs hourly, deletes expired entries
+
+**RefreshTokenService.java** (interface)
+- **Methods:**
+  - createRefreshToken(Long userId) - Creates new 7-day token
+  - findByToken(String) - Optional lookup
+  - verifyExpiration(RefreshToken) - Validates & returns token
+  - deleteByUserId(Long) - Deletes user's refresh token
+
+**RefreshTokenServiceImpl.java** (~60 lines)
+- @Service, injected RefreshTokenRepository, UserRepository
+- Implements RefreshTokenService
+- Token rotation on refresh (creates new token, old deleted)
+
+**PasswordResetService.java** (interface)
+- **Methods:**
+  - createPasswordResetToken(String email) - Creates token, sends email
+  - resetPassword(String token, String newPassword) - Validates & updates
+
+**PasswordResetServiceImpl.java** (~80 lines)
+- @Service, injected repositories, UserService, EmailService
+- Generates 24-hour reset tokens
+- Sends reset links via email
+
+**EmailService.java** (interface)
+- **Methods:**
+  - sendPasswordResetEmail(String email, String resetLink) - Sends via SMTP
+
+**EmailServiceImpl.java** (~40 lines)
+- @Service, uses JavaMailSender
+- Sends HTML-formatted reset emails
+- Spring Mail configuration from application.yml
+
+**BlacklistedTokenService.java** (interface)
+- **Methods:**
+  - blacklistToken(String jti, Date expiry) - Adds to blacklist
+  - isBlacklisted(String jti) - Checks membership
+
+**BlacklistedTokenServiceImpl.java** (~30 lines)
+- @Service, injected BlacklistedTokenRepository
+- Simple save/find operations
 
 **UserService.java** (interface, ~20 lines)
 - Extends UserDetailsService (Spring Security)
@@ -216,11 +320,31 @@ jwt-spring-security/
 - **Methods:**
   - Optional<User> findByUsername(String)
   - boolean existsByUsername(String)
+  - Optional<User> findByEmail(String)
+  - boolean existsByEmail(String)
 
 **RoleRepository.java** (interface)
 - Extends JpaRepository<Role, Long>
 - **Methods:**
   - Role findByName(String)
+
+**RefreshTokenRepository.java** (interface)
+- Extends JpaRepository<RefreshToken, Long>
+- **Methods:**
+  - Optional<RefreshToken> findByToken(String)
+  - void deleteByUserId(Long userId)
+
+**PasswordResetTokenRepository.java** (interface)
+- Extends JpaRepository<PasswordResetToken, Long>
+- **Methods:**
+  - Optional<PasswordResetToken> findByToken(String)
+  - void deleteByUserId(Long userId)
+
+**BlacklistedTokenRepository.java** (interface)
+- Extends JpaRepository<BlacklistedToken, Long>
+- **Methods:**
+  - Optional<BlacklistedToken> findByJti(String)
+  - void deleteAllByExpiryDateBefore(LocalDateTime date)
 
 ## Configuration Files
 
@@ -244,15 +368,18 @@ jwt-spring-security/
 - **Plugins:**
   - spring-boot-maven-plugin (excludes Lombok)
 
-**application.yml** (46 lines)
+**application.yml** (~51 lines)
 - server.port: 8080
-- spring.jpa.hibernate.ddl-auto: none (manual schema)
+- spring.jpa.hibernate.ddl-auto: create-drop (development), should be none (production)
 - spring.jpa.show-sql: true
 - spring.datasource.url: jdbc:postgresql://localhost:5432/testdb
 - spring.datasource.username: postgres
-- spring.datasource.password: 123456
+- spring.datasource.password: postgres
+- spring.mail.host: smtp.gmail.com, port: 587 (for password reset emails)
 - namnd.app.jwtSecret: bezKoderSecretKey
-- namnd.app.jwtExpiration: 86400000 (24h in milliseconds)
+- namnd.app.jwtExpiration: 900000 (15 minutes in milliseconds)
+- namnd.app.jwtRefreshExpiration: 604800000 (7 days in milliseconds)
+- namnd.app.passwordResetBaseUrl: http://localhost:3000/reset-password
 - logging: DEBUG for com.namnd.springjwt, SQL queries
 
 **roles.sql** (3 lines)
@@ -286,12 +413,16 @@ jwt-spring-security/
 
 | Metric | Value |
 |--------|-------|
-| Total Java Classes | 19 |
-| Total Interfaces | 3 (UserService, RoleService, JwtService as @Component) |
-| Total Enums | 0 |
-| Largest Class | AuthController (96 lines) |
-| Package Depth | 3-4 levels (com.namnd.springjwt.{service.impl, dto.mapper, config.{filter,security,custom}}) |
-| Cyclomatic Complexity (est.) | Low (simple validation logic) |
+| Total Java Classes | 38 |
+| Total Interfaces | 8 (UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService) |
+| Total Enums | 1 (TokenType) |
+| Largest Class | AuthController (~197 lines) |
+| New Entities | 4 (RefreshToken, PasswordResetToken, BlacklistedToken, TokenType) |
+| New Services | 4 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService) |
+| New Repositories | 3 (RefreshTokenRepository, PasswordResetTokenRepository, BlacklistedTokenRepository) |
+| New DTOs | 4 (ForgotPasswordDto, ResetPasswordDto, RefreshTokenRequestDto, TokenRefreshResponseDto) |
+| Package Depth | 3-4 levels (com.namnd.springjwt.{service.impl, dto.mapper, config.{filter,security,custom}, util}) |
+| Scheduled Tasks | 1 (hourly blacklist cleanup) |
 | Test Coverage | 1 smoke test (SpringJwtApplicationTests) |
 
 ## External Dependencies
@@ -300,9 +431,11 @@ jwt-spring-security/
 |------------|---------|-----------|-----------------|
 | Spring Boot | 2.6.4 | - | LTS, active maintenance |
 | Spring Security | included | - | Active maintenance |
+| Spring Mail | included | - | Active maintenance |
 | JJWT | 0.9.0 | ~0.1 | Stable (newer: 0.11.x, 0.12.x available) |
 | PostgreSQL Driver | ~42.x | ~0.9 | Latest |
-| Lombok | ~1.18.x | ~1.8 | Active maintenance |
+| Lombok | 1.18.30 | ~1.8 | JDK 21 compatible |
+| JavaMail | included | - | JDK built-in |
 
 ## Build & Artifact
 
@@ -325,18 +458,24 @@ docker build -t ms-authentication-service .
 - Clean separation of concerns (controller → service → repository)
 - Standard Spring Security patterns
 - Lombok reduces boilerplate
-- Stateless design supports scaling
-- Error handling in JWT validation
+- Stateless design with token rotation supports scaling
+- Token refresh mechanism with rotation
+- JTI-based blacklisting for logout
+- Email-driven password reset flow
+- Scheduled cleanup of expired tokens
+- Configurable token expiration times
+- Email validation required on registration
 
 **Areas for Improvement:**
 - Limited test coverage (1 smoke test)
 - No validation annotations (@Valid, @NotNull) on DTOs
 - Hardcoded jwtSecret in application.yml (should use env var)
 - No rate limiting on login endpoint
-- No token refresh mechanism
+- Password reset tokens need stronger entropy
+- Spring Mail credentials in config (use env vars)
 - Manual schema management (no migrations tracked)
-- No request/response logging middleware
-- CustomAccesDeniedHandler not visible in summary (likely basic 403 response)
+- Email service error handling could be more robust
+- No audit logging for sensitive operations
 
 ## Deployment Artifacts
 
@@ -364,10 +503,13 @@ docker build -t ms-authentication-service .
 
 ## Future Expansion Points
 
-1. **Authentication Providers:** OAuth2, SAML, LDAP
-2. **Advanced Roles:** Implement permissions model (Role → Permission mapping)
-3. **Audit Logging:** Track login/register/access attempts
-4. **API Gateway:** Kong, Spring Cloud Gateway wrapper
-5. **Microservices:** Extract as library for other services
-6. **Admin UI:** Dashboard for user/role management
-7. **Analytics:** Track authentication metrics, anomalies
+1. **Two-Factor Authentication:** SMS or authenticator app support
+2. **OAuth2/Social Login:** Google, GitHub, Facebook integration
+3. **Advanced Roles:** Implement permissions model (Role → Permission mapping)
+4. **Audit Logging:** Track login/register/password reset/logout attempts
+5. **Rate Limiting:** Prevent brute force on login/forgot-password
+6. **Email Verification:** Verify email on registration
+7. **Token Encryption:** Add encryption layer to refresh tokens
+8. **API Gateway:** Kong, Spring Cloud Gateway wrapper
+9. **Admin Dashboard:** User/role management UI
+10. **Token Introspection:** Endpoint to check token validity

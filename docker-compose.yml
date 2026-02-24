@@ -1,0 +1,36 @@
+# spring-boot-docker/docker-compose.yml
+version: "3.7"
+services:
+  postgres-service:
+    image: 'postgres:13.1-alpine'
+    ports:
+      - "5432:5432"
+    volumes:
+      - /Users/admin/Desktop/DEV/DOCKER/docker-volumes:/var/lib/docker/volumes/postgres/_data
+    networks:
+      - my-net
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+  ms-authentication-service:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    networks:
+      - my-net
+    depends_on:
+      - postgres-service
+#  angular:
+#    image: angular-test
+#    ports:
+#      - "4200:80"
+#    expose:
+#      - "80"
+#    networks:
+#      - my-net
+networks:
+  my-net:
+    driver: bridge

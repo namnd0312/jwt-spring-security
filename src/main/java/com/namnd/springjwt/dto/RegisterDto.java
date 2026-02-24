@@ -14,6 +14,8 @@ public class RegisterDto {
 
     private String fullName;
 
+    private String email;
+
     private Set<Role> roles;
 
     public Long getId() {
@@ -54,5 +56,13 @@ public class RegisterDto {
 
     public void setRoles(Set<Role> roles) {
         this.roles = roles;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
     }
 }

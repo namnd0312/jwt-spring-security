@@ -152,20 +152,27 @@ CLIENT                           SERVER
   │                                │
   │                                ├─ JwtService.generateTokenLogin()
   │                                │  ├─ Extract username from UserPrinciple
-  │                                │  ├─ Build JWT Claims
+  │                                │  ├─ Build JWT Claims + JTI
   │                                │  │  ├─ subject: username
+  │                                │  │  ├─ jti: random UUID
   │                                │  │  ├─ issuedAt: now
-  │                                │  │  └─ expiration: now + 24h
+  │                                │  │  └─ expiration: now + 15min
   │                                │  ├─ Sign with HS512 + SECRET_KEY
   │                                │  └─ Return JWT string
+  │                                │
+  │                                ├─ RefreshTokenService.createRefreshToken()
+  │                                │  ├─ Generate random refresh token
+  │                                │  ├─ Set expiration: now + 7 days
+  │                                │  └─ Save RefreshToken to database
   │                                │
   │                                ├─ Load User from DB
   │                                └─ Return JwtResponseDto
   │
   │ ◀─ 200 OK ─────────────────────┤
-  │  {token, username, roles, ...}  │
+  │  {token, refreshToken,          │
+  │   username, roles, ...}         │
   │                                 │
-  └─ Store token locally ───────────┘
+  └─ Store both tokens locally ────┘
 ```
 
 ### Request Authorization Flow
@@ -245,6 +252,113 @@ CLIENT                              SERVER
   └─────────────────────────────────┘
 ```
 
+### Token Refresh Flow
+
+```
+CLIENT                           SERVER
+  │                                │
+  ├─ POST /api/auth/refresh-token ▶ AuthController.refreshToken()
+  │  {refreshToken}                │
+  │                                ├─ RefreshTokenService.findByToken()
+  │                                │  └─ Database lookup
+  │                                │
+  │                                ├─ RefreshTokenService.verifyExpiration()
+  │                                │  ├─ Check if expired
+  │                                │  └─ Return RefreshToken if valid
+  │                                │
+  │                                ├─ JwtService.generateTokenFromUsername()
+  │                                │  ├─ Extract username from user
+  │                                │  ├─ Build JWT with new JTI
+  │                                │  └─ Return new access token
+  │                                │
+  │                                ├─ RefreshTokenService.createRefreshToken()
+  │                                │  ├─ Rotate: delete old, create new
+  │                                │  └─ Save new RefreshToken
+  │                                │
+  │                                └─ Return TokenRefreshResponseDto
+  │
+  │ ◀─ 200 OK ─────────────────────┤
+  │  {accessToken, refreshToken}    │
+  │                                 │
+  └─ Update both tokens locally ───┘
+```
+
+### Password Reset Flow
+
+```
+CLIENT                           SERVER
+  │                                │
+  ├─ POST /api/auth/forgot-password ▶ AuthController.forgotPassword()
+  │  {email}                        │
+  │                                ├─ PasswordResetService.createPasswordResetToken()
+  │                                │  ├─ UserRepository.findByEmail()
+  │                                │  ├─ Generate reset token (24h expiry)
+  │                                │  └─ Save PasswordResetToken to DB
+  │                                │
+  │                                ├─ EmailService.sendPasswordResetEmail()
+  │                                │  ├─ Build reset link with token
+  │                                │  │  └─ {passwordResetBaseUrl}?token={token}
+  │                                │  ├─ Send via SMTP (Gmail)
+  │                                │  └─ Return email sent status
+  │                                │
+  │                                └─ Return success message
+  │
+  │ ◀─ 200 OK ─────────────────────┤
+  │  "If email exists..."           │
+  │                                 │
+  │  (User clicks email link)       │
+  │                                 │
+  ├─ POST /api/auth/reset-password ▶ AuthController.resetPassword()
+  │  {token, newPassword}           │
+  │                                ├─ PasswordResetService.resetPassword()
+  │                                │  ├─ PasswordResetTokenRepository.findByToken()
+  │                                │  ├─ Verify not expired
+  │                                │  ├─ PasswordEncoder.encode(newPassword)
+  │                                │  ├─ Update User.password in DB
+  │                                │  └─ Delete reset token
+  │                                │
+  │                                └─ Return success
+  │
+  │ ◀─ 200 OK ─────────────────────┤
+  │  "Password reset successful"    │
+  │                                 │
+  └─ User can now login ───────────┘
+```
+
+### Logout Flow
+
+```
+CLIENT                           SERVER
+  │                                │
+  ├─ POST /api/auth/logout ──────▶ AuthController.logout()
+  │  Authorization: Bearer <token> │
+  │                                ├─ Extract Authorization header
+  │                                ├─ Parse JWT token
+  │                                │
+  │                                ├─ JwtService.getJtiFromToken()
+  │                                │  └─ Extract JTI claim
+  │                                │
+  │                                ├─ BlacklistedTokenService.blacklistToken()
+  │                                │  ├─ Create BlacklistedToken(jti)
+  │                                │  ├─ Set expiry to token expiry
+  │                                │  └─ Save to DB
+  │                                │
+  │                                ├─ JwtService.getUserNameFromJwtToken()
+  │                                │  └─ Extract username
+  │                                │
+  │                                ├─ RefreshTokenService.deleteByUserId()
+  │                                │  └─ Delete user's refresh token
+  │                                │
+  │                                └─ Return success
+  │
+  │ ◀─ 200 OK ─────────────────────┤
+  │  "Logged out successfully"      │
+  │                                 │
+  └─ Clear tokens locally ────────┘
+
+  (Scheduled: JwtService.cleanupExpiredBlacklistedTokens() runs hourly)
+```
+
 ## Data Model
 
 ### Entity Relationships
@@ -255,22 +369,35 @@ CLIENT                              SERVER
 ├──────────────────────┤         ├──────────────────────┤
 │ id (PK, BIGSERIAL)   │         │ id (PK, BIGSERIAL)   │
 │ username (UNIQUE)    │         │ name (VARCHAR)       │
-│ password (VARCHAR)   │─────┬──▶│ └─ "ROLE_USER"       │
-│ full_name (VARCHAR)  │     │   │ └─ "ROLE_PM"         │
-│ ◀─────────────────────┤ M:M │   │ └─ "ROLE_ADMIN"      │
-└──────────────────────┘     │   └──────────────────────┘
-        ▲                    │
-        │ FK                 │
-        └────────────────────┘
-         (through user_roles)
+│ email (UNIQUE)       │─────┬──▶│ └─ "ROLE_USER"       │
+│ password (VARCHAR)   │     │   │ └─ "ROLE_PM"         │
+│ full_name (VARCHAR)  │ M:M │   │ └─ "ROLE_ADMIN"      │
+│ ◀─────────────────────┤     │   └──────────────────────┘
+└─────────┬────────────┘     │
+          │                  │ FK
+          │ FK               │
+          │ ┌────────────────┘
+          │ │
+          ▼ ▼
+      (through user_roles)
 
-┌──────────────────────────┐
-│      user_roles          │
-├──────────────────────────┤
-│ user_id (FK to users)    │
-│ role_id (FK to roles)    │
-│ (PK: user_id, role_id)   │
-└──────────────────────────┘
+┌──────────────────────┐     ┌──────────────────────────┐
+│      user_roles      │     │   refresh_tokens         │
+├──────────────────────┤     ├──────────────────────────┤
+│ user_id (FK)         │     │ id (PK, BIGSERIAL)       │
+│ role_id (FK)         │     │ token (VARCHAR, UNIQUE)  │
+│ (PK: composite)      │     │ expiry_date (TIMESTAMP)  │
+└──────────────────────┘     │ user_id (FK to users)    │
+                             └──────────────────────────┘
+
+┌───────────────────────────┐  ┌──────────────────────────┐
+│ password_reset_tokens     │  │   blacklisted_tokens     │
+├───────────────────────────┤  ├──────────────────────────┤
+│ id (PK, BIGSERIAL)        │  │ id (PK, BIGSERIAL)       │
+│ token (VARCHAR, UNIQUE)   │  │ jti (VARCHAR, UNIQUE)    │
+│ expiry_date (TIMESTAMP)   │  │ expiry_date (TIMESTAMP)  │
+│ user_id (FK to users)     │  └──────────────────────────┘
+└───────────────────────────┘
 ```
 
 ### Security Context Representation
@@ -311,8 +438,9 @@ HEADER (Base64URL-decoded):
 PAYLOAD (Base64URL-decoded):
 {
   "sub": "john",                    // username
+  "jti": "uuid-string",             // JWT ID (unique identifier)
   "iat": 1638360000,                // issued at (seconds)
-  "exp": 1638446400                 // expiration (24h later)
+  "exp": 1638360900                 // expiration (15min later)
 }
 
 SIGNATURE:
@@ -322,14 +450,28 @@ HMACSHA512(
 )
 ```
 
-**Token Lifecycle:**
-1. Generated at login with 24h expiration
+**Access Token Lifecycle:**
+1. Generated at login with 15-minute expiration + unique JTI
 2. Sent to client in response
 3. Client stores token (localStorage, sessionStorage, HttpOnly cookie)
 4. Client sends in Authorization header: `Bearer <token>`
-5. Server validates signature & expiration on each request
-6. Token expires after 24h (requires re-login)
-7. No refresh mechanism (requires fresh login)
+5. Server validates signature, expiration, and blacklist on each request
+6. Token expires after 15 minutes
+7. Before expiration, client uses refresh token to obtain new pair
+
+**Refresh Token Lifecycle:**
+1. Generated at login with 7-day expiration
+2. Sent to client in response
+3. Client stores token separately from access token
+4. Client sends to /api/auth/refresh-token endpoint when access token expires
+5. Server validates expiration, generates new access + refresh token pair
+6. Old refresh token is deleted (rotation on each use)
+7. Provides 7 days of extended session before re-login required
+
+**Token Revocation:**
+- On logout: JTI added to blacklist_tokens table with expiration date
+- Scheduled cleanup: hourly job deletes expired entries from blacklist
+- Validation: checks if JTI in blacklist before accepting token
 
 ## Component Interactions
 
@@ -465,37 +607,56 @@ PostgreSQL Container
 ### Security Boundaries
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  PUBLIC ZONE                                         │
-│  ┌─────────────────────────────────────────────┐   │
-│  │ POST /api/auth/login   (no auth required)   │   │
-│  │ POST /api/auth/register (no auth required)  │   │
-│  └─────────────────────────────────────────────┘   │
-└──────────────────────┬──────────────────────────────┘
-                       │ Client obtains JWT token
-                       ▼
-┌──────────────────────────────────────────────────────┐
-│  PROTECTED ZONE                                       │
-│  ┌───────────────────────────────────────────────┐  │
-│  │ All other endpoints require:                  │  │
-│  │ 1. Authorization: Bearer <token> header       │  │
-│  │ 2. Valid token signature (HS512)              │  │
-│  │ 3. Token not expired                          │  │
-│  │ 4. @PreAuthorize role checks                  │  │
-│  └───────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  PUBLIC ZONE                                              │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │ POST /api/auth/login      (no auth required)     │   │
+│  │ POST /api/auth/register   (no auth required)     │   │
+│  │ POST /api/auth/forgot-password (no auth req)     │   │
+│  │ POST /api/auth/reset-password  (token only)      │   │
+│  │ POST /api/auth/refresh-token   (refresh token)   │   │
+│  └──────────────────────────────────────────────────┘   │
+└────────────────────┬─────────────────────────────────────┘
+                     │ Client obtains access + refresh tokens
+                     ▼
+┌──────────────────────────────────────────────────────────┐
+│  PROTECTED ZONE                                           │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ All other endpoints require:                      │  │
+│  │ 1. Authorization: Bearer <accessToken> header     │  │
+│  │ 2. Valid token signature (HS512)                  │  │
+│  │ 3. Token not expired (15 min)                     │  │
+│  │ 4. JTI not in blacklist (logout check)            │  │
+│  │ 5. @PreAuthorize role checks                      │  │
+│  │                                                   │  │
+│  │ POST /api/auth/logout                             │  │
+│  │ ├─ Requires: Bearer accessToken                   │  │
+│  │ ├─ Blacklists: JTI of current token               │  │
+│  │ └─ Deletes: user's refresh token                  │  │
+│  └───────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### Potential Security Improvements
+### Security Improvements Implemented
 
-1. **Token Refresh:** Implement refresh tokens (longer-lived tokens for obtaining new access tokens)
-2. **Token Revocation:** Maintain revocation list (blacklist/whitelist) for logout functionality
-3. **Rate Limiting:** Add rate limiter on /api/auth/login to prevent brute force
-4. **Audit Logging:** Log all authentication attempts with IP, timestamp, success/failure
-5. **HTTPS Only:** Enforce HTTPS in production (JWT in Authorization header, not cookies)
-6. **Secret Management:** Use vault service (HashiCorp Vault, AWS Secrets Manager) instead of config file
-7. **Algorithm Upgrade:** Upgrade JJWT to 0.12.x for newer JWT standards compliance
-8. **Asymmetric Keys:** Consider RS256 for distributed systems where multiple services validate tokens
+1. **Token Refresh:** Refresh tokens with rotation (7-day expiration, new token on refresh)
+2. **Token Revocation:** JTI-based blacklisting with scheduled cleanup
+3. **Password Reset:** Email-driven reset flow with 24-hour token expiration
+4. **Email Validation:** Required and unique email on registration
+5. **Access Token Expiration:** Shortened to 15 minutes for reduced exposure
+
+### Potential Security Improvements (Future)
+
+1. **Rate Limiting:** Add rate limiter on /api/auth/login to prevent brute force
+2. **Email Verification:** Verify email ownership during registration
+3. **Audit Logging:** Log all authentication attempts with IP, timestamp, success/failure
+4. **HTTPS Only:** Enforce HTTPS in production (JWT in Authorization header, not cookies)
+5. **Secret Management:** Use vault service (HashiCorp Vault, AWS Secrets Manager) instead of config file
+6. **Algorithm Upgrade:** Upgrade JJWT to 0.12.x for newer JWT standards compliance
+7. **Asymmetric Keys:** Consider RS256 for distributed systems where multiple services validate tokens
+8. **Two-Factor Auth:** SMS or authenticator app for sensitive operations
+9. **Token Encryption:** Encrypt refresh tokens in transit/storage
+10. **IP Whitelisting:** Restrict access from known IP ranges
 
 ## Scaling Considerations
 

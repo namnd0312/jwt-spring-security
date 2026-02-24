@@ -16,6 +16,8 @@ public class JwtResponseDto {
 
     private String name;
 
+    private String refreshToken;
+
     private Collection<?extends GrantedAuthority> roles;
 
     public JwtResponseDto() {
@@ -24,6 +26,16 @@ public class JwtResponseDto {
     public JwtResponseDto(Long id, String token, String username, String name, Collection<? extends GrantedAuthority> roles) {
         this.id = id;
         this.token = token;
+        this.username = username;
+        this.name = name;
+        this.roles = roles;
+    }
+
+    public JwtResponseDto(Long id, String token, String refreshToken, String username,
+                          String name, Collection<? extends GrantedAuthority> roles) {
+        this.id = id;
+        this.token = token;
+        this.refreshToken = refreshToken;
         this.username = username;
         this.name = name;
         this.roles = roles;
@@ -75,5 +87,13 @@ public class JwtResponseDto {
 
     public void setRoles(Collection<? extends GrantedAuthority> roles) {
         this.roles = roles;
+    }
+
+    public String getRefreshToken() {
+        return refreshToken;
+    }
+
+    public void setRefreshToken(String refreshToken) {
+        this.refreshToken = refreshToken;
     }
 }

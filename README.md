@@ -3,7 +3,7 @@
 REST API authentication & authorization using JWT (JSON Web Tokens) with Spring Boot 2.6.4 and Spring Security.
 
 **Current Version:** 0.0.1-SNAPSHOT
-**Java:** 1.8 (source) | 11 (Docker)
+**Java:** 1.8 (source) | 11 (Docker) | 21 (JDK compatibility via Lombok 1.18.30)
 **Database:** PostgreSQL 13.1
 **License:** Proprietary
 
@@ -49,7 +49,7 @@ Response (200 OK):
 {
   "id": 1,
   "token": "eyJhbGc...",
-  "type": "Bearer",
+  "refreshToken": "eyJhbGc...",
   "username": "john",
   "name": "John Doe",
   "roles": ["ROLE_USER"]
@@ -62,6 +62,7 @@ Request:
 {
   "username": "jane",
   "password": "secure123",
+  "email": "jane@example.com",
   "fullName": "Jane Doe",
   "roles": [
     {"name": "ROLE_USER"},
@@ -71,6 +72,52 @@ Request:
 
 Response (200 OK):
 "User registered successfully!"
+```
+
+**POST /api/auth/forgot-password** - Request password reset
+```json
+Request:
+{
+  "email": "jane@example.com"
+}
+
+Response (200 OK):
+"If the email exists, a password reset link has been sent."
+```
+
+**POST /api/auth/reset-password** - Reset password with token
+```json
+Request:
+{
+  "token": "reset-token-from-email",
+  "newPassword": "newSecure123"
+}
+
+Response (200 OK):
+"Password reset successful."
+```
+
+**POST /api/auth/refresh-token** - Get new access token
+```json
+Request:
+{
+  "refreshToken": "eyJhbGc..."
+}
+
+Response (200 OK):
+{
+  "accessToken": "eyJhbGc...",
+  "refreshToken": "eyJhbGc..."
+}
+```
+
+**POST /api/auth/logout** - Logout and blacklist token
+```
+Request Headers:
+Authorization: Bearer <token>
+
+Response (200 OK):
+"Logged out successfully."
 ```
 
 ### Protected Endpoints
@@ -88,38 +135,52 @@ curl -H "Authorization: Bearer eyJhbGc..." http://localhost:8080/api/protected
 - Spring Security + JWT (JJWT 0.9.0)
 - Spring Data JPA + Hibernate
 - PostgreSQL + Flyway (manual DDL)
+- Spring Mail (for password reset emails)
 - BCrypt password encoding
+- Lombok 1.18.30 (JDK 21 compatible)
 - Maven WAR packaging
 
 **Security:**
-- Stateless JWT authentication (no sessions)
+- Stateless JWT authentication with refresh tokens
 - HS512 signature algorithm
-- 24-hour token expiration (configurable)
+- 15-minute access token expiration (900000 ms, configurable)
+- 7-day refresh token rotation on each use
+- JTI-based token blacklisting for logout
+- Password reset flow via email
 - Role-based access control (@PreAuthorize)
 - CORS enabled
 - CSRF disabled (appropriate for JWT API)
 
 **Authentication Flow:**
 1. User submits credentials → AuthenticationManager validates
-2. JwtService generates HS512 token
-3. Client stores token, sends in Authorization header
+2. JwtService generates HS512 access token + refresh token
+3. Client stores both tokens, sends access token in Authorization header
 4. JwtAuthenticationFilter validates token on each request
 5. SecurityContext populated with UserDetails/roles
+6. On token expiration, client uses refresh token to obtain new pair
+7. Logout blacklists current token by JTI and deletes refresh token
 
 ## Configuration
 
 **src/main/resources/application.yml:**
 ```yaml
-server.port: 8080                    # Server port
+server.port: 8080                          # Server port
 spring.datasource.url: jdbc:postgresql://localhost:5432/testdb
-namnd.app.jwtSecret: bezKoderSecretKey  # Token signing key
-namnd.app.jwtExpiration: 86400000       # 24 hours in milliseconds
+spring.mail.host: smtp.gmail.com           # SMTP server for password reset emails
+spring.mail.port: 587
+namnd.app.jwtSecret: bezKoderSecretKey     # Token signing key
+namnd.app.jwtExpiration: 900000            # 15 minutes in milliseconds
+namnd.app.jwtRefreshExpiration: 604800000  # 7 days in milliseconds
+namnd.app.passwordResetBaseUrl: http://localhost:3000/reset-password
 ```
 
 **Override via environment:**
 ```bash
 -Dnamnd.app.jwtSecret=your-secret-key
--Dnamnd.app.jwtExpiration=3600000
+-Dnamnd.app.jwtExpiration=900000
+-Dnamnd.app.jwtRefreshExpiration=604800000
+-DMAIL_USERNAME=your-email@gmail.com
+-DMAIL_PASSWORD=your-app-password
 ```
 
 ## Project Structure
@@ -154,13 +215,16 @@ src/main/java/com/namnd/springjwt/
 ## Database
 
 **Schema:** PostgreSQL 13.1
-- **users** table: id, username, password, full_name
+- **users** table: id, username, email (unique), password, full_name
 - **roles** table: id, name
 - **user_roles** junction: user_id (FK), role_id (FK)
+- **refresh_tokens** table: id, token, expiry_date, user_id (FK)
+- **password_reset_tokens** table: id, token, expiry_date, user_id (FK)
+- **blacklisted_tokens** table: id, jti (JWT ID), expiry_date
 
 **Default Roles:** ROLE_USER, ROLE_PM, ROLE_ADMIN (from roles.sql)
 
-**Note:** Hibernate DDL auto is `none` - manual schema management required.
+**Note:** Hibernate DDL auto is `create-drop` (for development) - enable `none` for production.
 
 ## Testing
 
@@ -184,13 +248,24 @@ mvn test
 - Use docker-compose for automatic setup
 
 **401 Invalid token**
-- Token expired? Default: 24 hours
+- Access token expired? Default: 15 minutes - use refresh endpoint
 - Verify jwtSecret matches between server & client
 - Check Authorization header format: `Bearer <token>`
+- Token blacklisted (logged out)? Must re-login
 
 **403 Access denied**
 - User lacks required role? Check @PreAuthorize annotation
 - Default test roles: ROLE_USER, ROLE_PM, ROLE_ADMIN
+
+**Refresh token invalid**
+- Refresh token expired? Default: 7 days - must re-login
+- Refresh token already rotated? Obtain new pair from /api/auth/refresh-token
+- User logged out? Refresh token deleted - must re-login
+
+**Password reset link not working**
+- Check PASSWORD_RESET_BASE_URL environment variable
+- Verify MAIL_USERNAME and MAIL_PASSWORD for Gmail SMTP
+- Ensure email address exists in database
 
 ## Development
 

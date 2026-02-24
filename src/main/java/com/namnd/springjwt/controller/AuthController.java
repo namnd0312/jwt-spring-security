@@ -1,13 +1,11 @@
 package com.namnd.springjwt.controller;
 
-import com.namnd.springjwt.dto.JwtResponseDto;
-import com.namnd.springjwt.dto.RegisterDto;
+import com.namnd.springjwt.dto.*;
 import com.namnd.springjwt.dto.mapper.RegisterDtoMapper;
+import com.namnd.springjwt.model.RefreshToken;
 import com.namnd.springjwt.model.Role;
 import com.namnd.springjwt.model.User;
-import com.namnd.springjwt.service.JwtService;
-import com.namnd.springjwt.service.RoleService;
-import com.namnd.springjwt.service.UserService;
+import com.namnd.springjwt.service.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -19,6 +17,8 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
+import java.util.Date;
 import java.util.Optional;
 import java.util.Set;
 
@@ -45,6 +45,15 @@ public class AuthController {
     @Autowired
     private RegisterDtoMapper registerDtoMapper;
 
+    @Autowired
+    private PasswordResetService passwordResetService;
+
+    @Autowired
+    private RefreshTokenService refreshTokenService;
+
+    @Autowired
+    private BlacklistedTokenService blacklistedTokenService;
+
     @PostMapping("/login")
     public ResponseEntity<?> authenticateUser(@RequestBody User user) {
 
@@ -60,37 +69,123 @@ public class AuthController {
         String jwt = jwtService.generateTokenLogin(authentication);
         UserDetails userDetails = (UserDetails) authentication.getPrincipal();
         User currentUser = userService.findByUserName(user.getUsername()).get();
-        return ResponseEntity.ok(new JwtResponseDto(currentUser.getId(), jwt, userDetails.getUsername(), currentUser.getFullName(), userDetails.getAuthorities()));
+
+        RefreshToken refreshToken = refreshTokenService.createRefreshToken(currentUser.getId());
+
+        return ResponseEntity.ok(new JwtResponseDto(
+                currentUser.getId(),
+                jwt,
+                refreshToken.getToken(),
+                userDetails.getUsername(),
+                currentUser.getFullName(),
+                userDetails.getAuthorities()));
     }
 
     @PostMapping("/register")
     public ResponseEntity<String> registerUser(@RequestBody RegisterDto registerDto) {
-        if(userService.existsByUsername(registerDto.getUsername())) {
-            return new ResponseEntity<String>("Fail -> Username is already taken!",
+        if (userService.existsByUsername(registerDto.getUsername())) {
+            return new ResponseEntity<>("Fail -> Username is already taken!",
+                    HttpStatus.BAD_REQUEST);
+        }
+
+        // Validate email: required and unique
+        if (registerDto.getEmail() == null || registerDto.getEmail().trim().isEmpty()) {
+            return new ResponseEntity<>("Fail -> Email is required!",
+                    HttpStatus.BAD_REQUEST);
+        }
+        if (userService.existsByEmail(registerDto.getEmail())) {
+            return new ResponseEntity<>("Fail -> Email is already in use!",
                     HttpStatus.BAD_REQUEST);
         }
 
         Set<Role> roles = registerDto.getRoles();
 
-        for (Role role: roles) {
-            if(roleService.findByName(role.getName()) == null){
+        for (Role role : roles) {
+            if (roleService.findByName(role.getName()) == null) {
                 roleService.save(role);
                 roleService.flush();
-            }else {
+            } else {
                 role.setId(roleService.findByName(role.getName()).getId());
             }
-        }
-
-        Optional<User> user = this.userService.findByUserName(registerDto.getUsername());
-
-        if(user.isPresent()){
-            return new ResponseEntity<String>("Fail -> Username is already taken!",
-                    HttpStatus.BAD_REQUEST);
         }
 
         User user1 = registerDtoMapper.toEntity(registerDto);
         userService.save(user1);
 
         return ResponseEntity.ok().body("User registered successfully!");
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<?> forgotPassword(@RequestBody ForgotPasswordDto forgotPasswordDto) {
+        passwordResetService.createPasswordResetToken(forgotPasswordDto.getEmail());
+        return ResponseEntity.ok("If the email exists, a password reset link has been sent.");
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<?> resetPassword(@RequestBody ResetPasswordDto resetPasswordDto) {
+        try {
+            passwordResetService.resetPassword(
+                    resetPasswordDto.getToken(),
+                    resetPasswordDto.getNewPassword());
+            return ResponseEntity.ok("Password reset successful.");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/refresh-token")
+    public ResponseEntity<?> refreshToken(
+            @RequestBody RefreshTokenRequestDto refreshTokenRequestDto) {
+        String requestRefreshToken = refreshTokenRequestDto.getRefreshToken();
+
+        Optional<RefreshToken> tokenOptional = refreshTokenService
+                .findByToken(requestRefreshToken);
+
+        if (!tokenOptional.isPresent()) {
+            return ResponseEntity.badRequest().body("Invalid refresh token.");
+        }
+
+        try {
+            // Atomic: verify expiry + delete old + create new (single transaction)
+            RefreshToken newRefreshToken = refreshTokenService
+                    .rotateRefreshToken(tokenOptional.get());
+            User user = newRefreshToken.getUser();
+
+            String newAccessToken = jwtService.generateTokenFromUsername(user.getUsername());
+
+            return ResponseEntity.ok(new TokenRefreshResponseDto(
+                    newAccessToken, newRefreshToken.getToken()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<?> logout(HttpServletRequest request) {
+        String jwt = getJwtFromRequest(request);
+
+        if (jwt == null || !jwtService.validateJwtToken(jwt)) {
+            return ResponseEntity.badRequest().body("No valid token provided.");
+        }
+
+        // Blacklist the current access token by JTI
+        String jti = jwtService.getJtiFromToken(jwt);
+        Date tokenExpiry = jwtService.getExpirationFromToken(jwt);
+        blacklistedTokenService.blacklistToken(jti, tokenExpiry);
+
+        // Delete the user's refresh token
+        String username = jwtService.getUserNameFromJwtToken(jwt);
+        Optional<User> userOptional = userService.findByUserName(username);
+        userOptional.ifPresent(user -> refreshTokenService.deleteByUserId(user.getId()));
+
+        return ResponseEntity.ok("Logged out successfully.");
+    }
+
+    private String getJwtFromRequest(HttpServletRequest request) {
+        String authHeader = request.getHeader("Authorization");
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            return authHeader.replace("Bearer ", "");
+        }
+        return null;
     }
 }
