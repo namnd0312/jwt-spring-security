@@ -168,8 +168,13 @@ public class AuthController {
             return ResponseEntity.badRequest().body("No valid token provided.");
         }
 
-        // Blacklist the current access token by JTI
+        // Reject already-blacklisted tokens
         String jti = jwtService.getJtiFromToken(jwt);
+        if (blacklistedTokenService.isTokenBlacklisted(jti)) {
+            return ResponseEntity.badRequest().body("Token already invalidated.");
+        }
+
+        // Blacklist the current access token by JTI
         Date tokenExpiry = jwtService.getExpirationFromToken(jwt);
         blacklistedTokenService.blacklistToken(jti, tokenExpiry);
 

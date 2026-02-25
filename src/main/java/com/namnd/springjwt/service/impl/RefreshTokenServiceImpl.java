@@ -37,8 +37,12 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
                 .orElseThrow(() -> new RuntimeException("User not found with id: " + userId));
 
         // Delete existing refresh token for this user (rotation)
+        // Flush required to avoid unique constraint violation (Hibernate batches insert before delete)
         Optional<RefreshToken> existing = refreshTokenRepository.findByUser(user);
-        existing.ifPresent(token -> refreshTokenRepository.delete(token));
+        if (existing.isPresent()) {
+            refreshTokenRepository.delete(existing.get());
+            refreshTokenRepository.flush();
+        }
 
         RefreshToken refreshToken = new RefreshToken();
         refreshToken.setUser(user);
