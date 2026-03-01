@@ -114,19 +114,28 @@ jwt-spring-security/
 
 ### 3. REST Controller
 
-**AuthController.java** (~197 lines)
+**AuthController.java** (~230 lines)
 - Route: `/api/auth`
 - Annotations: @CrossOrigin(origins="*", maxAge=3600), @RestController, @RequestMapping
 - **Endpoints:**
   - **POST /login** (accepts LoginRequestDto with email+password, returns JwtResponseDto)
     - Authenticates via AuthenticationManager using email as principal
+    - Returns 401 "Account not activated" if user.active=false
     - Generates access token + refresh token
     - Returns id, token, refreshToken, email, username, name, roles
   - **POST /register** (accepts RegisterDto, returns String)
     - Validates email uniqueness only (duplicate usernames allowed)
     - Validates email required field
-    - Encodes password, creates/assigns roles
-    - Saves user via UserService
+    - Encodes password, creates/assigns roles, saves with active=false
+    - Triggers ActivationService.createActivationToken() to send email
+    - Returns: "User registered successfully! Please check your email to activate your account."
+  - **GET /activate** (query param: token)
+    - Delegates to ActivationService.activateAccount(token)
+    - Sets user.active=true, marks token used
+    - Returns 400 on invalid/expired/already-used token
+  - **POST /resend-activation** (accepts ForgotPasswordDto with email)
+    - Delegates to ActivationService.resendActivation(email)
+    - Returns generic success message (security)
   - **POST /forgot-password** (accepts ForgotPasswordDto)
     - Generates password reset token
     - Sends reset link via email
@@ -146,7 +155,7 @@ jwt-spring-security/
 
 ### 4. Data Models
 
-**User.java** (~35 lines)
+**User.java** (~40 lines)
 - @Entity, @Data (Lombok)
 - **Table:** users
 - **Columns:**
@@ -155,6 +164,7 @@ jwt-spring-security/
   - email (String, unique)
   - password (String, BCrypt-encoded)
   - fullName (String)
+  - active (boolean, default false - set true after email activation)
   - roles (Set<Role>, ManyToMany eager, JoinTable user_roles)
 
 **RefreshToken.java** (~30 lines)
@@ -179,6 +189,16 @@ jwt-spring-security/
 - **Methods:**
   - isExpired() - checks token validity
 
+**ActivationToken.java** (~35 lines)
+- @Entity, @Data (Lombok)
+- **Table:** activation_tokens
+- **Columns:**
+  - id (BIGSERIAL)
+  - token (String, unique)
+  - expiryDate (LocalDateTime)
+  - user (User, ManyToOne)
+  - used (boolean, default false)
+- **Purpose:** Tracks email activation links; single-use, expires after 24h
 
 **Role.java** (~20 lines)
 - @Entity, @Data (Lombok)
@@ -197,7 +217,8 @@ jwt-spring-security/
 - **Methods:**
   - getAuthorities() - Returns GrantedAuthority collection from Role names
   - getUsername(), getPassword() - Simple getters
-  - isAccountNonExpired(), isAccountNonLocked(), isCredentialsNonExpired(), isEnabled() - All return true
+  - isAccountNonExpired(), isAccountNonLocked(), isCredentialsNonExpired() - All return true
+  - isEnabled() - Returns user.active (false until email activation completes)
 
 ### 5. Data Transfer Objects
 
@@ -274,11 +295,24 @@ jwt-spring-security/
 **EmailService.java** (interface)
 - **Methods:**
   - sendPasswordResetEmail(String email, String resetLink) - Sends via SMTP
+  - sendActivationEmail(String email, String activationLink) - Sends account activation email
 
-**EmailServiceImpl.java** (~40 lines)
+**EmailServiceImpl.java** (~55 lines)
 - @Service, uses JavaMailSender
-- Sends HTML-formatted reset emails
+- Sends HTML-formatted emails for password reset and account activation
 - Spring Mail configuration from application.yml
+
+**ActivationService.java** (interface)
+- **Methods:**
+  - createActivationToken(User user) - Creates token, sends activation email
+  - activateAccount(String token) - Validates token, sets user.active=true
+  - resendActivation(String email) - Generates new token if account not yet active
+
+**ActivationServiceImpl.java** (~90 lines)
+- @Service, injected ActivationTokenRepository, UserService, EmailService
+- Generates 24-hour activation tokens (UUID-based)
+- Sends activation links via email ({activationBaseUrl}?token={token})
+- Marks token as used after successful activation
 
 **BlacklistedTokenService.java** (interface)
 - **Methods:**
@@ -362,6 +396,11 @@ jwt-spring-security/
   - Optional<PasswordResetToken> findByToken(String)
   - void deleteByUserId(Long userId)
 
+**ActivationTokenRepository.java** (interface)
+- Extends JpaRepository<ActivationToken, Long>
+- **Methods:**
+  - Optional<ActivationToken> findByToken(String)
+  - void deleteByUserId(Long userId)
 
 ## Configuration Files
 
@@ -400,6 +439,7 @@ jwt-spring-security/
 - namnd.app.jwtExpiration: 900000 (15 minutes in milliseconds)
 - namnd.app.jwtRefreshExpiration: 604800000 (7 days in milliseconds)
 - namnd.app.passwordResetBaseUrl: http://localhost:3000/reset-password
+- namnd.app.activationBaseUrl: http://localhost:8080/api/auth/activate
 - logging: DEBUG for com.namnd.springjwt, SQL queries
 
 **roles.sql** (3 lines)
@@ -435,14 +475,14 @@ jwt-spring-security/
 | Metric | Value |
 |--------|-------|
 | Total Java Classes | 38 |
-| Total Interfaces | 8 (UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService) |
+| Total Interfaces | 10 (UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, ActivationService) |
 | Total Enums | 0 |
-| Largest Class | AuthController (~197 lines) |
-| New Entities | 3 (RefreshToken, PasswordResetToken) |
-| New Services | 6 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, RedisService) |
-| New Service Impls | 4 (RefreshTokenServiceImpl, PasswordResetServiceImpl, EmailServiceImpl, BlacklistedTokenServiceImpl, RedisServiceImpl) |
+| Largest Class | AuthController (~230 lines) |
+| New Entities | 4 (RefreshToken, PasswordResetToken, ActivationToken) |
+| New Services | 7 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, RedisService, ActivationService) |
+| New Service Impls | 5 (RefreshTokenServiceImpl, PasswordResetServiceImpl, EmailServiceImpl, BlacklistedTokenServiceImpl, RedisServiceImpl, ActivationServiceImpl) |
 | New Config Classes | 2 (RedisConfig, RedisKeyPrefix) |
-| New Repositories | 2 (RefreshTokenRepository, PasswordResetTokenRepository) |
+| New Repositories | 3 (RefreshTokenRepository, PasswordResetTokenRepository, ActivationTokenRepository) |
 | New DTOs | 4 (ForgotPasswordDto, ResetPasswordDto, RefreshTokenRequestDto, TokenRefreshResponseDto) |
 | Package Depth | 3-4 levels (com.namnd.springjwt.{service.impl, dto.mapper, config, util}) |
 | Scheduled Tasks | 0 (Redis auto-TTL replaces scheduled cleanup) |
@@ -535,8 +575,7 @@ docker build -t ms-authentication-service .
 3. **Advanced Roles:** Implement permissions model (Role → Permission mapping)
 4. **Audit Logging:** Track login/register/password reset/logout attempts
 5. **Rate Limiting:** Prevent brute force on login/forgot-password
-6. **Email Verification:** Verify email on registration
-7. **Token Encryption:** Add encryption layer to refresh tokens
+6. **Token Encryption:** Add encryption layer to refresh tokens
 8. **API Gateway:** Kong, Spring Cloud Gateway wrapper
 9. **Admin Dashboard:** User/role management UI
 10. **Token Introspection:** Endpoint to check token validity

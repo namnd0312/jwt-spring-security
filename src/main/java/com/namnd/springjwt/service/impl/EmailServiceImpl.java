@@ -20,6 +20,9 @@ public class EmailServiceImpl implements EmailService {
     @Value("${namnd.app.passwordResetBaseUrl}")
     private String passwordResetBaseUrl;
 
+    @Value("${namnd.app.activationBaseUrl}")
+    private String activationBaseUrl;
+
     @Override
     public void sendPasswordResetEmail(String to, String token) {
         String resetLink = passwordResetBaseUrl + "?token=" + token;
@@ -39,9 +42,28 @@ public class EmailServiceImpl implements EmailService {
             mailSender.send(message);
             logger.info("Password reset email sent to: {}", maskEmail(to));
         } catch (Exception e) {
-            // Log-only fallback when SMTP fails
-            logger.error("Failed to send password reset email: {}", e.getMessage());
-            logger.info("Password reset link (SMTP fallback): {}", resetLink);
+            logger.error("Failed to send password reset email to {}: {}", maskEmail(to), e.getMessage());
+        }
+    }
+
+    @Override
+    public void sendActivationEmail(String to, String token) {
+        String activationLink = activationBaseUrl + "?token=" + token;
+        try {
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setTo(to);
+            message.setSubject("Activate Your Account");
+            message.setText(
+                "Welcome! Please activate your account.\n\n"
+                + "Click the link below to activate:\n"
+                + activationLink + "\n\n"
+                + "This link will expire in 24 hours.\n"
+                + "If you did not register, please ignore this email."
+            );
+            mailSender.send(message);
+            logger.info("Activation email sent to: {}", maskEmail(to));
+        } catch (Exception e) {
+            logger.error("Failed to send activation email to {}: {}", maskEmail(to), e.getMessage());
         }
     }
 

@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -56,33 +57,40 @@ public class AuthController {
     @Autowired
     private BlacklistedTokenService blacklistedTokenService;
 
+    @Autowired
+    private ActivationService activationService;
+
     @PostMapping("/login")
     public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequestDto loginRequest) {
+        try {
+            Authentication authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            loginRequest.getEmail(),
+                            loginRequest.getPassword()
+                    )
+            );
 
-        Authentication authentication = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                        loginRequest.getEmail(),
-                        loginRequest.getPassword()
-                )
-        );
+            SecurityContextHolder.getContext().setAuthentication(authentication);
 
-        SecurityContextHolder.getContext().setAuthentication(authentication);
+            String jwt = jwtService.generateTokenLogin(authentication);
+            UserDetails userDetails = (UserDetails) authentication.getPrincipal();
+            User currentUser = userService.findByEmail(loginRequest.getEmail())
+                    .orElseThrow(() -> new org.springframework.security.core.userdetails.UsernameNotFoundException("User not found"));
 
-        String jwt = jwtService.generateTokenLogin(authentication);
-        UserDetails userDetails = (UserDetails) authentication.getPrincipal();
-        User currentUser = userService.findByEmail(loginRequest.getEmail())
-                .orElseThrow(() -> new org.springframework.security.core.userdetails.UsernameNotFoundException("User not found"));
+            RefreshToken refreshToken = refreshTokenService.createRefreshToken(currentUser.getId());
 
-        RefreshToken refreshToken = refreshTokenService.createRefreshToken(currentUser.getId());
-
-        return ResponseEntity.ok(new JwtResponseDto(
-                currentUser.getId(),
-                jwt,
-                refreshToken.getToken(),
-                currentUser.getEmail(),
-                currentUser.getUsername(),
-                currentUser.getFullName(),
-                userDetails.getAuthorities()));
+            return ResponseEntity.ok(new JwtResponseDto(
+                    currentUser.getId(),
+                    jwt,
+                    refreshToken.getToken(),
+                    currentUser.getEmail(),
+                    currentUser.getUsername(),
+                    currentUser.getFullName(),
+                    userDetails.getAuthorities()));
+        } catch (DisabledException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body("Account not activated. Please check your email for the activation link.");
+        }
     }
 
     @PostMapping("/register")
@@ -110,8 +118,26 @@ public class AuthController {
 
         User user1 = registerDtoMapper.toEntity(registerDto);
         userService.save(user1);
+        activationService.createActivationToken(user1);
 
-        return ResponseEntity.ok().body("User registered successfully!");
+        return ResponseEntity.ok().body("User registered successfully! Please check your email to activate your account.");
+    }
+
+    @GetMapping("/activate")
+    public ResponseEntity<?> activateAccount(@RequestParam("token") String token) {
+        try {
+            activationService.activateAccount(token);
+            return ResponseEntity.ok("Account activated successfully! You can now login.");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/resend-activation")
+    public ResponseEntity<?> resendActivation(@RequestBody ForgotPasswordDto request) {
+        // Always returns 200 to prevent email enumeration
+        activationService.resendActivationToken(request.getEmail());
+        return ResponseEntity.ok("If the email is registered and not yet activated, an activation email has been sent.");
     }
 
     @PostMapping("/forgot-password")

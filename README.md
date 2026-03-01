@@ -72,7 +72,30 @@ Request:
 }
 
 Response (200 OK):
-"User registered successfully!"
+"User registered successfully! Please check your email to activate your account."
+```
+
+**GET /api/auth/activate** - Activate account via email link
+```
+Request:
+GET /api/auth/activate?token=<activation-token-from-email>
+
+Response (200 OK):
+"Account activated successfully."
+
+Response (400 Bad Request):
+"Invalid or expired activation token."
+```
+
+**POST /api/auth/resend-activation** - Resend activation email
+```json
+Request:
+{
+  "email": "jane@example.com"
+}
+
+Response (200 OK):
+"If the email exists and is not yet activated, a new activation link has been sent."
 ```
 
 **POST /api/auth/forgot-password** - Request password reset
@@ -153,13 +176,16 @@ curl -H "Authorization: Bearer eyJhbGc..." http://localhost:8080/api/protected
 - CSRF disabled (appropriate for JWT API)
 
 **Authentication Flow:**
-1. User submits email + password → AuthenticationManager validates
-2. JwtService generates HS512 access token + refresh token
-3. Client stores both tokens, sends access token in Authorization header
-4. JwtAuthenticationFilter validates token on each request
-5. SecurityContext populated with UserDetails/roles
-6. On token expiration, client uses refresh token to obtain new pair
-7. Logout blacklists current token by JTI and deletes refresh token
+1. User registers → account created with `active=false`, activation email sent
+2. User clicks activation link → GET /api/auth/activate?token=xxx → account activated
+3. User submits email + password → AuthenticationManager validates + checks `active` flag
+4. Inactive accounts receive 401 "Account not activated"
+5. JwtService generates HS512 access token + refresh token
+6. Client stores both tokens, sends access token in Authorization header
+7. JwtAuthenticationFilter validates token on each request
+8. SecurityContext populated with UserDetails/roles
+9. On token expiration, client uses refresh token to obtain new pair
+10. Logout blacklists current token by JTI and deletes refresh token
 
 ## Configuration
 
@@ -173,6 +199,7 @@ namnd.app.jwtSecret: bezKoderSecretKey     # Token signing key
 namnd.app.jwtExpiration: 900000            # 15 minutes in milliseconds
 namnd.app.jwtRefreshExpiration: 604800000  # 7 days in milliseconds
 namnd.app.passwordResetBaseUrl: http://localhost:3000/reset-password
+namnd.app.activationBaseUrl: http://localhost:8080/api/auth/activate
 ```
 
 **Override via environment:**
@@ -216,11 +243,12 @@ src/main/java/com/namnd/springjwt/
 ## Database
 
 **Schema:** PostgreSQL 13.1
-- **users** table: id, username, email (unique), password, full_name
+- **users** table: id, username, email (unique), password, full_name, active (boolean, default false)
 - **roles** table: id, name
 - **user_roles** junction: user_id (FK), role_id (FK)
 - **refresh_tokens** table: id, token, expiry_date, user_id (FK)
 - **password_reset_tokens** table: id, token, expiry_date, user_id (FK)
+- **activation_tokens** table: id, token (unique), expiry_date, user_id (FK), used (boolean)
 - **blacklisted_tokens** table: id, jti (JWT ID), expiry_date
 
 **Default Roles:** ROLE_USER, ROLE_PM, ROLE_ADMIN (from roles.sql)
@@ -262,6 +290,16 @@ mvn test
 - Refresh token expired? Default: 7 days - must re-login
 - Refresh token already rotated? Obtain new pair from /api/auth/refresh-token
 - User logged out? Refresh token deleted - must re-login
+
+**401 Account not activated**
+- After registration, check inbox for activation email
+- Click the activation link (valid for 24 hours)
+- Use POST /api/auth/resend-activation with your email if link expired
+
+**Activation link not working**
+- Link valid for 24 hours - request a new one via POST /api/auth/resend-activation
+- Check ACTIVATION_BASE_URL environment variable
+- Verify MAIL_USERNAME and MAIL_PASSWORD for Gmail SMTP
 
 **Password reset link not working**
 - Check PASSWORD_RESET_BASE_URL environment variable

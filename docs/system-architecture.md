@@ -20,6 +20,8 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  │         AuthController (@RestController)             │   │
 │  │  POST /api/auth/login                                │   │
 │  │  POST /api/auth/register                             │   │
+│  │  GET  /api/auth/activate                             │   │
+│  │  POST /api/auth/resend-activation                    │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                           ▲                                   │
 │                           │                                   │
@@ -164,6 +166,7 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  │ username    │  │ name     │  │ role_id (FK)   │ │
 │  │ password    │  │          │  │                │ │
 │  │ full_name   │  │          │  │                │ │
+│  │ active      │  │          │  │                │ │
 │  └─────────────┘  └──────────┘  └────────────────┘ │
 └─────────────────────────────────────────────────────┘
 ```
@@ -178,6 +181,9 @@ CLIENT                           SERVER
   ├─ POST /api/auth/login ──────▶ AuthController.authenticateUser()
   │  {email, password}             │
   │                                ├─ AuthenticationManager.authenticate()
+  │                                │  (Spring Security calls isEnabled()
+  │                                │   which returns user.active; throws
+  │                                │   DisabledException if false → 401)
   │                                │  ├─ UserServiceImpl.loadUserByUsername(email)
   │                                │  │  └─ UserRepository.findByEmail()
   │                                │  │     └─ Database Query
@@ -270,7 +276,7 @@ CLIENT                              SERVER
   │                                   │  │  └─ Set role ID from DB
   │                                   │  └─ Transaction: flush
   │                                   │
-  │                                   ├─ Map RegisterDto → User
+  │                                   ├─ Map RegisterDto → User (active=false)
   │                                   │  ├─ RegisterDtoMapper.toEntity()
   │                                   │  │  ├─ Copy username, fullName
   │                                   │  │  ├─ PasswordEncoder.encode()
@@ -280,14 +286,50 @@ CLIENT                              SERVER
   │                                   │
   │                                   ├─ UserService.save(user)
   │                                   │  └─ UserRepository.save()
-  │                                   │     └─ DB INSERT (with FK to roles)
+  │                                   │     └─ DB INSERT (active=false)
+  │                                   │
+  │                                   ├─ ActivationService.createActivationToken()
+  │                                   │  ├─ Generate UUID activation token
+  │                                   │  ├─ Set expiration: now + 24h
+  │                                   │  ├─ Save ActivationToken to DB
+  │                                   │  └─ EmailService.sendActivationEmail()
+  │                                   │     └─ Send {activationBaseUrl}?token={token}
   │                                   │
   │                                   └─ Return success message
   │
   │ ◀─ 200 OK ──────────────────────┤
-  │  "User registered successfully!"  │
+  │  "User registered successfully!  │
+  │   Please check your email to     │
+  │   activate your account."        │
   │
   └─────────────────────────────────┘
+```
+
+### Email Activation Flow
+
+```
+CLIENT                              SERVER
+  │                                  │
+  │  (User clicks link in email)     │
+  │                                  │
+  ├─ GET /api/auth/activate ────────▶ AuthController.activateAccount()
+  │  ?token=<uuid-token>             │
+  │                                  ├─ ActivationService.activateAccount(token)
+  │                                  │  ├─ ActivationTokenRepository.findByToken()
+  │                                  │  ├─ Verify token not expired
+  │                                  │  ├─ Verify token not used
+  │                                  │  ├─ Set user.active = true
+  │                                  │  ├─ UserRepository.save(user)
+  │                                  │  └─ Mark token.used = true
+  │                                  │
+  │                                  └─ Return success message
+  │
+  │ ◀─ 200 OK ──────────────────────┤
+  │  "Account activated successfully"│
+  │                                  │
+  │ (or 400 if token invalid/expired)│
+  │                                  │
+  └─ User can now login ────────────┘
 ```
 
 ### Token Refresh Flow
@@ -411,7 +453,8 @@ CLIENT                           SERVER
 │ email (UNIQUE)       │─────┬──▶│ └─ "ROLE_USER"       │
 │ password (VARCHAR)   │     │   │ └─ "ROLE_PM"         │
 │ full_name (VARCHAR)  │ M:M │   │ └─ "ROLE_ADMIN"      │
-│ ◀─────────────────────┤     │   └──────────────────────┘
+│ active (BOOLEAN)     │     │   └──────────────────────┘
+│ ◀─────────────────────┤     │
 └─────────┬────────────┘     │
           │                  │ FK
           │ FK               │
@@ -429,14 +472,15 @@ CLIENT                           SERVER
 └──────────────────────┘     │ user_id (FK to users)    │
                              └──────────────────────────┘
 
-┌───────────────────────────┐
-│ password_reset_tokens     │
-├───────────────────────────┤
-│ id (PK, BIGSERIAL)        │
-│ token (VARCHAR, UNIQUE)   │
-│ expiry_date (TIMESTAMP)   │
-│ user_id (FK to users)     │
-└───────────────────────────┘
+┌───────────────────────────┐     ┌───────────────────────────┐
+│ password_reset_tokens     │     │ activation_tokens         │
+├───────────────────────────┤     ├───────────────────────────┤
+│ id (PK, BIGSERIAL)        │     │ id (PK, BIGSERIAL)        │
+│ token (VARCHAR, UNIQUE)   │     │ token (VARCHAR, UNIQUE)   │
+│ expiry_date (TIMESTAMP)   │     │ expiry_date (TIMESTAMP)   │
+│ user_id (FK to users)     │     │ user_id (FK to users)     │
+└───────────────────────────┘     │ used (BOOLEAN, default F) │
+                                  └───────────────────────────┘
 
 REDIS (Key-Value Store)
 ├──────────────────────────────────┐
@@ -657,11 +701,14 @@ PostgreSQL Container
 ┌──────────────────────────────────────────────────────────┐
 │  PUBLIC ZONE                                              │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │ POST /api/auth/login      (no auth required)     │   │
-│  │ POST /api/auth/register   (no auth required)     │   │
-│  │ POST /api/auth/forgot-password (no auth req)     │   │
-│  │ POST /api/auth/reset-password  (token only)      │   │
-│  │ POST /api/auth/refresh-token   (refresh token)   │   │
+│  │ POST /api/auth/login        (no auth required)   │   │
+│  │  └─ Returns 401 if account not activated         │   │
+│  │ POST /api/auth/register     (no auth required)   │   │
+│  │ GET  /api/auth/activate     (token param only)   │   │
+│  │ POST /api/auth/resend-activation (no auth req)   │   │
+│  │ POST /api/auth/forgot-password   (no auth req)   │   │
+│  │ POST /api/auth/reset-password    (token only)    │   │
+│  │ POST /api/auth/refresh-token     (refresh token) │   │
 │  └──────────────────────────────────────────────────┘   │
 └────────────────────┬─────────────────────────────────────┘
                      │ Client obtains access + refresh tokens
@@ -691,12 +738,12 @@ PostgreSQL Container
 3. **Password Reset:** Email-driven reset flow with 24-hour token expiration
 4. **Email Validation:** Required and unique email on registration
 5. **Access Token Expiration:** Shortened to 15 minutes for reduced exposure
+6. **Email Activation:** New accounts inactive until email-verified; login blocked for inactive accounts
 
 ### Potential Security Improvements (Future)
 
 1. **Rate Limiting:** Add rate limiter on /api/auth/login to prevent brute force
-2. **Email Verification:** Verify email ownership during registration
-3. **Audit Logging:** Log all authentication attempts with IP, timestamp, success/failure
+2. **Audit Logging:** Log all authentication attempts with IP, timestamp, success/failure
 4. **HTTPS Only:** Enforce HTTPS in production (JWT in Authorization header, not cookies)
 5. **Secret Management:** Use vault service (HashiCorp Vault, AWS Secrets Manager) instead of config file
 6. **Algorithm Upgrade:** Upgrade JJWT to 0.12.x for newer JWT standards compliance

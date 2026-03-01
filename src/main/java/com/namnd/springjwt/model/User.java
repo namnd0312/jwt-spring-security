@@ -24,6 +24,9 @@ public class User {
     @Column(unique = true)
     private String email;
 
+    @Column(nullable = false)
+    private boolean active = false;
+
     @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(name = "user_roles", joinColumns = {@JoinColumn(name = "user_id")},
     inverseJoinColumns = {@JoinColumn(name = "role_id")})
