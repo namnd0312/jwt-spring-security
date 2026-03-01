@@ -55,7 +55,12 @@ Response (200 OK):
   "name": "John Doe",
   "roles": ["ROLE_USER"]
 }
+
+Response (423 Locked):
+"Account is locked. Try again in X minutes."
 ```
+
+Note: After 5 consecutive failed login attempts (configurable), the account is locked for 15 minutes. Successful login resets the failed attempt counter.
 
 **POST /api/auth/register** - Create new user
 ```json
@@ -172,20 +177,24 @@ curl -H "Authorization: Bearer eyJhbGc..." http://localhost:8080/api/protected
 - JTI-based token blacklisting for logout
 - Password reset flow via email
 - Role-based access control (@PreAuthorize)
+- Account lockout after 5 failed login attempts (auto-unlocks after 15 minutes)
 - CORS enabled
 - CSRF disabled (appropriate for JWT API)
 
 **Authentication Flow:**
 1. User registers → account created with `active=false`, activation email sent
 2. User clicks activation link → GET /api/auth/activate?token=xxx → account activated
-3. User submits email + password → AuthenticationManager validates + checks `active` flag
-4. Inactive accounts receive 401 "Account not activated"
-5. JwtService generates HS512 access token + refresh token
-6. Client stores both tokens, sends access token in Authorization header
-7. JwtAuthenticationFilter validates token on each request
-8. SecurityContext populated with UserDetails/roles
-9. On token expiration, client uses refresh token to obtain new pair
-10. Logout blacklists current token by JTI and deletes refresh token
+3. User submits email + password → pre-auth check: account locked? → 423 if so
+4. AuthenticationManager validates credentials + checks `active` flag
+5. Failed credentials → increment `failedAttempts`; lock account if threshold reached
+6. Successful auth → reset `failedAttempts` to 0, clear `lockTime`
+7. Inactive accounts receive 401 "Account not activated"
+8. JwtService generates HS512 access token + refresh token
+9. Client stores both tokens, sends access token in Authorization header
+10. JwtAuthenticationFilter validates token on each request
+11. SecurityContext populated with UserDetails/roles
+12. On token expiration, client uses refresh token to obtain new pair
+13. Logout blacklists current token by JTI and deletes refresh token
 
 ## Configuration
 
@@ -200,6 +209,8 @@ namnd.app.jwtExpiration: 900000            # 15 minutes in milliseconds
 namnd.app.jwtRefreshExpiration: 604800000  # 7 days in milliseconds
 namnd.app.passwordResetBaseUrl: http://localhost:3000/reset-password
 namnd.app.activationBaseUrl: http://localhost:8080/api/auth/activate
+namnd.app.maxFailedAttempts: 5                    # Lock account after N failed logins
+namnd.app.lockDurationMs: 900000                  # Lock duration (default 15 minutes)
 ```
 
 **Override via environment:**
@@ -305,6 +316,12 @@ mvn test
 - Check PASSWORD_RESET_BASE_URL environment variable
 - Verify MAIL_USERNAME and MAIL_PASSWORD for Gmail SMTP
 - Ensure email address exists in database
+
+**423 Account locked**
+- Account locked after 5 consecutive failed login attempts
+- Auto-unlocks after 15 minutes (configurable via `namnd.app.lockDurationMs`)
+- Lock duration shown in response: "Account is locked. Try again in X minutes."
+- Successful login resets the failed attempt counter
 
 ## Development
 

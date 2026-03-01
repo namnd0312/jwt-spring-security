@@ -141,6 +141,8 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  │  ├─ username: String (unique)              │   │
 │  │  ├─ password: String (BCrypt-encoded)      │   │
 │  │  ├─ fullName: String                       │   │
+│  │  ├─ failedAttempts: int (default 0)        │   │
+│  │  ├─ lockTime: Date (nullable)              │   │
 │  │  └─ roles: Set<Role> (ManyToMany, EAGER)   │   │
 │  └────────────────────────────────────────────┘   │
 │  ┌────────────────────────────────────────────┐   │
@@ -153,21 +155,24 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  │  ├─ adapts User for Spring Security        │   │
 │  │  ├─ id, username, password, fullName       │   │
 │  │  ├─ authorities (from Role names)          │   │
-│  │  └─ account status methods (all true)      │   │
+│  │  ├─ isAccountNonLocked() - real lock state │   │
+│  │  └─ isEnabled() - returns user.active      │   │
 │  └────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────┐
 │         DATABASE LAYER (PostgreSQL 13.1)            │
-│  ┌─────────────┐  ┌──────────┐  ┌────────────────┐ │
-│  │ users       │  │ roles    │  │ user_roles     │ │
-│  │ ─────────── │  │ ────────── │  │ ────────────── │ │
-│  │ id (PK)     │  │ id (PK)  │  │ user_id (FK)   │ │
-│  │ username    │  │ name     │  │ role_id (FK)   │ │
-│  │ password    │  │          │  │                │ │
-│  │ full_name   │  │          │  │                │ │
-│  │ active      │  │          │  │                │ │
-│  └─────────────┘  └──────────┘  └────────────────┘ │
+│  ┌─────────────────┐  ┌──────────┐  ┌────────────────┐ │
+│  │ users           │  │ roles    │  │ user_roles     │ │
+│  │ ─────────────── │  │ ──────── │  │ ────────────── │ │
+│  │ id (PK)         │  │ id (PK)  │  │ user_id (FK)   │ │
+│  │ username        │  │ name     │  │ role_id (FK)   │ │
+│  │ password        │  │          │  │                │ │
+│  │ full_name       │  │          │  │                │ │
+│  │ active          │  │          │  │                │ │
+│  │ failed_attempts │  │          │  │                │ │
+│  │ lock_time       │  │          │  │                │ │
+│  └─────────────────┘  └──────────┘  └────────────────┘ │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -180,10 +185,13 @@ CLIENT                           SERVER
   │                                │
   ├─ POST /api/auth/login ──────▶ AuthController.authenticateUser()
   │  {email, password}             │
+  │                                ├─ AccountLockService.isLocked(user)?
+  │                                │  ├─ Yes → 423 "Account locked, try in X min"
+  │                                │  └─ No → continue
+  │                                │
   │                                ├─ AuthenticationManager.authenticate()
-  │                                │  (Spring Security calls isEnabled()
-  │                                │   which returns user.active; throws
-  │                                │   DisabledException if false → 401)
+  │                                │  (Spring Security calls isEnabled() → DisabledException if false → 401)
+  │                                │  (Spring Security calls isAccountNonLocked() → LockedException if false → 423)
   │                                │  ├─ UserServiceImpl.loadUserByUsername(email)
   │                                │  │  └─ UserRepository.findByEmail()
   │                                │  │     └─ Database Query
@@ -193,6 +201,15 @@ CLIENT                           SERVER
   │                                │  ├─ PasswordEncoder.matches(inputPassword, userPassword)
   │                                │  │  └─ BCrypt Verification
   │                                │  └─ Return Authentication(UserPrinciple)
+  │                                │
+  │                                ├─ [on BadCredentialsException]
+  │                                │  └─ AccountLockService.loginFailed(email)
+  │                                │     ├─ Increment user.failedAttempts
+  │                                │     └─ If >= maxFailedAttempts: set user.lockTime=now
+  │                                │
+  │                                ├─ AccountLockService.loginSucceeded(email)
+  │                                │  ├─ Reset user.failedAttempts = 0
+  │                                │  └─ Clear user.lockTime = null
   │                                │
   │                                ├─ JwtService.generateTokenLogin()
   │                                │  ├─ Extract email from UserPrinciple
@@ -449,11 +466,13 @@ CLIENT                           SERVER
 │       users          │         │       roles          │
 ├──────────────────────┤         ├──────────────────────┤
 │ id (PK, BIGSERIAL)   │         │ id (PK, BIGSERIAL)   │
-│ username (VARCHAR)   │         │ name (VARCHAR)       │
-│ email (UNIQUE)       │─────┬──▶│ └─ "ROLE_USER"       │
-│ password (VARCHAR)   │     │   │ └─ "ROLE_PM"         │
-│ full_name (VARCHAR)  │ M:M │   │ └─ "ROLE_ADMIN"      │
-│ active (BOOLEAN)     │     │   └──────────────────────┘
+│ username (VARCHAR)        │         │ name (VARCHAR)       │
+│ email (UNIQUE)            │─────┬──▶│ └─ "ROLE_USER"       │
+│ password (VARCHAR)        │     │   │ └─ "ROLE_PM"         │
+│ full_name (VARCHAR)       │ M:M │   │ └─ "ROLE_ADMIN"      │
+│ active (BOOLEAN)          │     │   └──────────────────────┘
+│ failed_attempts (INT)     │     │
+│ lock_time (TIMESTAMP, NULL│     │
 │ ◀─────────────────────┤     │
 └─────────┬────────────┘     │
           │                  │ FK
@@ -739,10 +758,11 @@ PostgreSQL Container
 4. **Email Validation:** Required and unique email on registration
 5. **Access Token Expiration:** Shortened to 15 minutes for reduced exposure
 6. **Email Activation:** New accounts inactive until email-verified; login blocked for inactive accounts
+7. **Account Lockout:** Auto-lock after N failed login attempts (default 5); auto-unlock after configurable duration (default 15 min); HTTP 423 returned with remaining lock time
 
 ### Potential Security Improvements (Future)
 
-1. **Rate Limiting:** Add rate limiter on /api/auth/login to prevent brute force
+1. **Rate Limiting:** Add HTTP-layer rate limiter on /api/auth/login (account lockout handles credential brute force; rate limiting handles volumetric attacks)
 2. **Audit Logging:** Log all authentication attempts with IP, timestamp, success/failure
 4. **HTTPS Only:** Enforce HTTPS in production (JWT in Authorization header, not cookies)
 5. **Secret Management:** Use vault service (HashiCorp Vault, AWS Secrets Manager) instead of config file

@@ -25,15 +25,18 @@ public class UserPrinciple implements UserDetails {
 
     private boolean active;
 
+    private boolean accountNonLocked;
+
     private Collection<? extends GrantedAuthority> roles;
 
     public UserPrinciple(Long id, String displayName, String email, String password,
-                         boolean active, Collection<? extends GrantedAuthority> roles) {
+                         boolean active, boolean accountNonLocked, Collection<? extends GrantedAuthority> roles) {
         this.id = id;
         this.displayName = displayName;
         this.email = email;
         this.password = password;
         this.active = active;
+        this.accountNonLocked = accountNonLocked;
         this.roles = roles;
     }
 
@@ -45,12 +48,15 @@ public class UserPrinciple implements UserDetails {
                 .map(role -> new SimpleGrantedAuthority(role.getName()))
                 .collect(Collectors.toList());
 
+        boolean accountNonLocked = user.getLockTime() == null;
+
         return new UserPrinciple(
                 user.getId(),
                 user.getUsername(),
                 user.getEmail(),
                 user.getPassword(),
                 user.isActive(),
+                accountNonLocked,
                 authorities);
     }
 
@@ -91,7 +97,7 @@ public class UserPrinciple implements UserDetails {
 
     @Override
     public boolean isAccountNonLocked() {
-        return true;
+        return accountNonLocked;
     }
 
     @Override

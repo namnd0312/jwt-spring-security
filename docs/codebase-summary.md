@@ -119,8 +119,12 @@ jwt-spring-security/
 - Annotations: @CrossOrigin(origins="*", maxAge=3600), @RestController, @RequestMapping
 - **Endpoints:**
   - **POST /login** (accepts LoginRequestDto with email+password, returns JwtResponseDto)
+    - Pre-auth check: returns 423 with remaining lock time if account is locked
     - Authenticates via AuthenticationManager using email as principal
+    - On BadCredentialsException: increments failedAttempts; locks account when threshold reached
+    - On LockedException: returns 423 "Account is locked"
     - Returns 401 "Account not activated" if user.active=false
+    - On success: resets failedAttempts to 0 and clears lockTime
     - Generates access token + refresh token
     - Returns id, token, refreshToken, email, username, name, roles
   - **POST /register** (accepts RegisterDto, returns String)
@@ -155,7 +159,7 @@ jwt-spring-security/
 
 ### 4. Data Models
 
-**User.java** (~40 lines)
+**User.java** (~45 lines)
 - @Entity, @Data (Lombok)
 - **Table:** users
 - **Columns:**
@@ -165,6 +169,8 @@ jwt-spring-security/
   - password (String, BCrypt-encoded)
   - fullName (String)
   - active (boolean, default false - set true after email activation)
+  - failedAttempts (int, default 0 - incremented on bad credentials)
+  - lockTime (Date, nullable - set when account locked, cleared on unlock)
   - roles (Set<Role>, ManyToMany eager, JoinTable user_roles)
 
 **RefreshToken.java** (~30 lines)
@@ -217,7 +223,8 @@ jwt-spring-security/
 - **Methods:**
   - getAuthorities() - Returns GrantedAuthority collection from Role names
   - getUsername(), getPassword() - Simple getters
-  - isAccountNonExpired(), isAccountNonLocked(), isCredentialsNonExpired() - All return true
+  - isAccountNonExpired(), isCredentialsNonExpired() - Return true
+  - isAccountNonLocked() - Returns actual lock state (false when User.lockTime set and within lockDurationMs)
   - isEnabled() - Returns user.active (false until email activation completes)
 
 ### 5. Data Transfer Objects
@@ -339,6 +346,19 @@ jwt-spring-security/
 - Injected: StringRedisTemplate, RedisTemplate<String, Object>
 - Try-catch error handling on every method (fail-safe returns)
 - Uses Jackson2JsonRedisSerializer for JSON serialization
+
+**AccountLockService.java** (interface)
+- **Methods:**
+  - loginFailed(String email) - Increments failedAttempts; locks account when maxFailedAttempts reached
+  - loginSucceeded(String email) - Resets failedAttempts to 0 and clears lockTime
+  - isLocked(User user) - Returns true if lockTime set and lock period not yet elapsed (auto-unlock check)
+  - getLockTimeRemaining(User user) - Returns remaining lock duration in minutes
+
+**AccountLockServiceImpl.java** (~60 lines)
+- @Service, injected UserRepository, @Value maxFailedAttempts, @Value lockDurationMs
+- loginFailed(): finds user by email, increments counter, sets lockTime when counter >= max
+- loginSucceeded(): resets failedAttempts=0 and lockTime=null, saves user
+- isLocked(): compares System.currentTimeMillis() against lockTime+lockDurationMs; auto-unlocks expired locks
 
 **UserService.java** (interface, ~20 lines)
 - Extends UserDetailsService (Spring Security)
@@ -474,13 +494,13 @@ jwt-spring-security/
 
 | Metric | Value |
 |--------|-------|
-| Total Java Classes | 38 |
-| Total Interfaces | 10 (UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, ActivationService) |
+| Total Java Classes | 40 |
+| Total Interfaces | 11 (UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, ActivationService, AccountLockService) |
 | Total Enums | 0 |
 | Largest Class | AuthController (~230 lines) |
 | New Entities | 4 (RefreshToken, PasswordResetToken, ActivationToken) |
-| New Services | 7 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, RedisService, ActivationService) |
-| New Service Impls | 5 (RefreshTokenServiceImpl, PasswordResetServiceImpl, EmailServiceImpl, BlacklistedTokenServiceImpl, RedisServiceImpl, ActivationServiceImpl) |
+| New Services | 8 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, RedisService, ActivationService, AccountLockService) |
+| New Service Impls | 6 (RefreshTokenServiceImpl, PasswordResetServiceImpl, EmailServiceImpl, BlacklistedTokenServiceImpl, RedisServiceImpl, ActivationServiceImpl, AccountLockServiceImpl) |
 | New Config Classes | 2 (RedisConfig, RedisKeyPrefix) |
 | New Repositories | 3 (RefreshTokenRepository, PasswordResetTokenRepository, ActivationTokenRepository) |
 | New DTOs | 4 (ForgotPasswordDto, ResetPasswordDto, RefreshTokenRequestDto, TokenRefreshResponseDto) |
@@ -535,7 +555,7 @@ docker build -t ms-authentication-service .
 - Limited test coverage (1 smoke test)
 - No validation annotations (@Valid, @NotNull) on DTOs
 - Hardcoded jwtSecret in application.yml (should use env var)
-- No rate limiting on login endpoint
+- Account lockout implemented (brute-force protection); HTTP rate limiting not yet added
 - Password reset tokens need stronger entropy
 - Spring Mail credentials in config (use env vars)
 - Manual schema management (no migrations tracked)

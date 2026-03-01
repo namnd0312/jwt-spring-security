@@ -10,7 +10,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
+import org.springframework.security.authentication.LockedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -60,9 +62,24 @@ public class AuthController {
     @Autowired
     private ActivationService activationService;
 
+    @Autowired
+    private AccountLockService accountLockService;
+
     @PostMapping("/login")
     public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequestDto loginRequest) {
         try {
+            // Pre-auth: check if account lock expired, auto-unlock if so
+            Optional<User> userOpt = userService.findByEmail(loginRequest.getEmail());
+            if (userOpt.isPresent()) {
+                User user = userOpt.get();
+                if (!accountLockService.unlockIfExpired(user)) {
+                    long remainingMs = accountLockService.getRemainingLockTimeMs(user);
+                    long remainingMin = (remainingMs / 60000) + 1;
+                    return ResponseEntity.status(423)
+                            .body("Account is locked. Try again in " + remainingMin + " minute(s).");
+                }
+            }
+
             Authentication authentication = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(
                             loginRequest.getEmail(),
@@ -71,6 +88,9 @@ public class AuthController {
             );
 
             SecurityContextHolder.getContext().setAuthentication(authentication);
+
+            // Success: reset failed attempts
+            accountLockService.resetFailedAttempts(loginRequest.getEmail());
 
             String jwt = jwtService.generateTokenLogin(authentication);
             UserDetails userDetails = (UserDetails) authentication.getPrincipal();
@@ -87,6 +107,26 @@ public class AuthController {
                     currentUser.getUsername(),
                     currentUser.getFullName(),
                     userDetails.getAuthorities()));
+
+        } catch (BadCredentialsException e) {
+            accountLockService.registerFailedAttempt(loginRequest.getEmail());
+
+            // Check if this attempt caused a lock
+            Optional<User> userOpt = userService.findByEmail(loginRequest.getEmail());
+            if (userOpt.isPresent() && accountLockService.isLocked(userOpt.get())) {
+                long remainingMs = accountLockService.getRemainingLockTimeMs(userOpt.get());
+                long remainingMin = (remainingMs / 60000) + 1;
+                return ResponseEntity.status(423)
+                        .body("Too many failed attempts. Account locked for " + remainingMin + " minute(s).");
+            }
+
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body("Invalid email or password.");
+
+        } catch (LockedException e) {
+            return ResponseEntity.status(423)
+                    .body("Account is locked. Please try again later.");
+
         } catch (DisabledException e) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body("Account not activated. Please check your email for the activation link.");

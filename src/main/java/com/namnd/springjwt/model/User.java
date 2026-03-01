@@ -4,6 +4,7 @@ package com.namnd.springjwt.model;
 import lombok.Data;
 
 import javax.persistence.*;
+import java.util.Date;
 import java.util.Set;
 
 @Data
@@ -26,6 +27,12 @@ public class User {
 
     @Column(nullable = false)
     private boolean active = false;
+
+    @Column(nullable = false)
+    private int failedAttempts = 0;
+
+    @Column(name = "lock_time")
+    private Date lockTime;
 
     @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(name = "user_roles", joinColumns = {@JoinColumn(name = "user_id")},
