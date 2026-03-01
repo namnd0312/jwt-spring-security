@@ -41,7 +41,7 @@ Server runs on `http://localhost:8080`
 ```json
 Request:
 {
-  "username": "john",
+  "email": "john@example.com",
   "password": "password123"
 }
 
@@ -50,6 +50,7 @@ Response (200 OK):
   "id": 1,
   "token": "eyJhbGc...",
   "refreshToken": "eyJhbGc...",
+  "email": "john@example.com",
   "username": "john",
   "name": "John Doe",
   "roles": ["ROLE_USER"]
@@ -152,7 +153,7 @@ curl -H "Authorization: Bearer eyJhbGc..." http://localhost:8080/api/protected
 - CSRF disabled (appropriate for JWT API)
 
 **Authentication Flow:**
-1. User submits credentials → AuthenticationManager validates
+1. User submits email + password → AuthenticationManager validates
 2. JwtService generates HS512 access token + refresh token
 3. Client stores both tokens, sends access token in Authorization header
 4. JwtAuthenticationFilter validates token on each request

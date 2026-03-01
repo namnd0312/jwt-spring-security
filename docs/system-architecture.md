@@ -53,20 +53,21 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  ┌────────────────────────────────────────────┐   │
 │  │  UserService (interface)                   │   │
 │  │  ├─ save(User)                             │   │
-│  │  ├─ findByUserName(String)                 │   │
-│  │  ├─ existsByUsername(String)               │   │
-│  │  └─ loadUserByUsername(String) [UserDetails]   │
+│  │  ├─ findByEmail(String)                    │   │
+│  │  ├─ existsByEmail(String)                  │   │
+│  │  └─ loadUserByUsername(String) [queries by email] │
 │  └────────────────────────────────────────────┘   │
 │  ┌────────────────────────────────────────────┐   │
 │  │  UserServiceImpl                             │   │
 │  │  ├─ delegates to UserRepository             │   │
-│  │  └─ builds UserPrinciple for Security       │   │
+│  │  └─ loadUserByUsername queries by email     │   │
 │  └────────────────────────────────────────────┘   │
 │  ┌────────────────────────────────────────────┐   │
 │  │  JwtService (@Component)                    │   │
 │  │  ├─ generateTokenLogin(Authentication)      │   │
+│  │  ├─ generateTokenFromEmail(String)          │   │
 │  │  ├─ validateJwtToken(String)                │   │
-│  │  └─ getUserNameFromJwtToken(String)         │   │
+│  │  └─ getEmailFromJwtToken(String)            │   │
 │  └────────────────────────────────────────────┘   │
 │  ┌────────────────────────────────────────────┐   │
 │  │  BlacklistedTokenServiceImpl                 │   │
@@ -120,7 +121,9 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  ┌────────────────────────────────────────────┐   │
 │  │  UserRepository extends JpaRepository       │   │
 │  │  ├─ findByUsername(String)                 │   │
-│  │  └─ existsByUsername(String)               │   │
+│  │  ├─ existsByUsername(String)               │   │
+│  │  ├─ findByEmail(String)                    │   │
+│  │  └─ existsByEmail(String)                  │   │
 │  └────────────────────────────────────────────┘   │
 │  ┌────────────────────────────────────────────┐   │
 │  │  RoleRepository extends JpaRepository       │   │
@@ -173,10 +176,10 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 CLIENT                           SERVER
   │                                │
   ├─ POST /api/auth/login ──────▶ AuthController.authenticateUser()
-  │  {username, password}          │
+  │  {email, password}             │
   │                                ├─ AuthenticationManager.authenticate()
-  │                                │  ├─ UserServiceImpl.loadUserByUsername()
-  │                                │  │  └─ UserRepository.findByUsername()
+  │                                │  ├─ UserServiceImpl.loadUserByUsername(email)
+  │                                │  │  └─ UserRepository.findByEmail()
   │                                │  │     └─ Database Query
   │                                │  │        ├─ Load User
   │                                │  │        └─ Eager Load Roles
@@ -186,9 +189,9 @@ CLIENT                           SERVER
   │                                │  └─ Return Authentication(UserPrinciple)
   │                                │
   │                                ├─ JwtService.generateTokenLogin()
-  │                                │  ├─ Extract username from UserPrinciple
+  │                                │  ├─ Extract email from UserPrinciple
   │                                │  ├─ Build JWT Claims + JTI
-  │                                │  │  ├─ subject: username
+  │                                │  │  ├─ subject: email
   │                                │  │  ├─ jti: random UUID
   │                                │  │  ├─ issuedAt: now
   │                                │  │  └─ expiration: now + 15min
@@ -205,7 +208,7 @@ CLIENT                           SERVER
   │
   │ ◀─ 200 OK ─────────────────────┤
   │  {token, refreshToken,          │
-  │   username, roles, ...}         │
+  │   email, username, roles, ...}  │
   │                                 │
   └─ Store both tokens locally ────┘
 ```
@@ -226,11 +229,11 @@ CLIENT                           SERVER
   │                                 │  └─ Check expiration
   │                                 │     (no DB call for validation)
   │                                 │
-  │                                 ├─ JwtService.getUserNameFromJwtToken()
-  │                                 │  └─ Extract username from claims
+  │                                 ├─ JwtService.getEmailFromJwtToken()
+  │                                 │  └─ Extract email from claims
   │                                 │
-  │                                 ├─ UserServiceImpl.loadUserByUsername()
-  │                                 │  └─ Load User + Roles from DB
+  │                                 ├─ UserServiceImpl.loadUserByUsername(email)
+  │                                 │  └─ Load User + Roles from DB by email
   │                                 │
   │                                 ├─ Build UserPrinciple
   │                                 ├─ Create SecurityContext
@@ -253,10 +256,10 @@ CLIENT                           SERVER
 CLIENT                              SERVER
   │                                  │
   ├─ POST /api/auth/register ───────▶ AuthController.registerUser()
-  │  {username, password,             │
+  │  {username, email, password,       │
   │   fullName, roles}                │
-  │                                   ├─ Check username uniqueness
-  │                                   │  └─ UserService.existsByUsername()
+  │                                   ├─ Check email uniqueness
+  │                                   │  └─ UserService.existsByEmail()
   │                                   │     └─ DB Query
   │                                   │        └─ Return boolean
   │                                   │
@@ -301,8 +304,8 @@ CLIENT                           SERVER
   │                                │  ├─ Check if expired
   │                                │  └─ Return RefreshToken if valid
   │                                │
-  │                                ├─ JwtService.generateTokenFromUsername()
-  │                                │  ├─ Extract username from user
+  │                                ├─ JwtService.generateTokenFromEmail()
+  │                                │  ├─ Extract email from user
   │                                │  ├─ Build JWT with new JTI
   │                                │  └─ Return new access token
   │                                │
@@ -379,8 +382,8 @@ CLIENT                           SERVER
   │                                │  ├─ Set TTL = token expiration epoch
   │                                │  └─ On Redis error: fail-closed (reject token)
   │                                │
-  │                                ├─ JwtService.getUserNameFromJwtToken()
-  │                                │  └─ Extract username
+  │                                ├─ JwtService.getEmailFromJwtToken()
+  │                                │  └─ Extract email
   │                                │
   │                                ├─ RefreshTokenService.deleteByUserId()
   │                                │  └─ Delete user's refresh token
@@ -404,7 +407,7 @@ CLIENT                           SERVER
 │       users          │         │       roles          │
 ├──────────────────────┤         ├──────────────────────┤
 │ id (PK, BIGSERIAL)   │         │ id (PK, BIGSERIAL)   │
-│ username (UNIQUE)    │         │ name (VARCHAR)       │
+│ username (VARCHAR)   │         │ name (VARCHAR)       │
 │ email (UNIQUE)       │─────┬──▶│ └─ "ROLE_USER"       │
 │ password (VARCHAR)   │     │   │ └─ "ROLE_PM"         │
 │ full_name (VARCHAR)  │ M:M │   │ └─ "ROLE_ADMIN"      │
@@ -452,7 +455,7 @@ SecurityContext
 ├─ Authentication
 │  ├─ principal: UserPrinciple
 │  │  ├─ id: 1
-│  │  ├─ username: "john"
+│  │  ├─ username: "john@example.com" (email used as Spring Security username)
 │  │  ├─ password: "$2a$10$..." (BCrypt hash)
 │  │  ├─ fullName: "John Doe"
 │  │  └─ authorities: [GrantedAuthority("ROLE_USER"), GrantedAuthority("ROLE_PM")]
@@ -481,7 +484,7 @@ HEADER (Base64URL-decoded):
 
 PAYLOAD (Base64URL-decoded):
 {
-  "sub": "john",                    // username
+  "sub": "john@example.com",        // email (used as subject)
   "jti": "uuid-string",             // JWT ID (unique identifier)
   "iat": 1638360000,                // issued at (seconds)
   "exp": 1638360900                 // expiration (15min later)

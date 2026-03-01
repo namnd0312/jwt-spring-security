@@ -22,8 +22,8 @@ JWT Spring Security is a Spring Boot-based REST API providing stateless authenti
 ## Functional Requirements
 
 ### Authentication (FR-001)
-- **User Login:** Accept username/password, validate credentials, return JWT tokens
-  - Accept JSON payload with username, password
+- **User Login:** Accept email/password, validate credentials, return JWT tokens
+  - Accept JSON payload with email, password
   - Authenticate via Spring AuthenticationManager
   - Generate HS512-signed access token (15-min expiration) with unique JTI
   - Generate refresh token (7-day expiration)
@@ -31,8 +31,7 @@ JWT Spring Security is a Spring Boot-based REST API providing stateless authenti
 
 - **User Registration:** Accept registration data, create user with roles
   - Accept JSON with username, email (required), password, fullName, roles array
-  - Validate username uniqueness
-  - Validate email uniqueness and required
+  - Validate email uniqueness and required (username uniqueness not enforced)
   - Encode password via BCrypt
   - Create roles if new, assign existing roles by ID
   - Persist User entity with role associations
@@ -69,7 +68,8 @@ JWT Spring Security is a Spring Boot-based REST API providing stateless authenti
 
 ### User Management (FR-003)
 - **User Entity:** Store user credentials & profile
-  - Username (unique)
+  - Username (not unique - duplicates allowed)
+  - Email (unique - used as login identifier)
   - Password (BCrypt hashed)
   - Full name
   - Set of assigned roles
@@ -150,7 +150,7 @@ JWT Spring Security is a Spring Boot-based REST API providing stateless authenti
 Request:
 ```json
 {
-  "username": "john",
+  "email": "john@example.com",
   "password": "password123"
 }
 ```
@@ -161,6 +161,7 @@ Response (200 OK):
   "id": 1,
   "token": "eyJhbGciOiJIUzUxMiJ9...",
   "refreshToken": "eyJhbGciOiJIUzUxMiJ9...",
+  "email": "john@example.com",
   "username": "john",
   "name": "John Doe",
   "roles": ["ROLE_USER", "ROLE_PM"]
@@ -168,7 +169,7 @@ Response (200 OK):
 ```
 
 Error (401 Unauthorized):
-- Invalid credentials, username not found, or password mismatch
+- Invalid credentials, email not found, or password mismatch
 
 ### Register Endpoint
 **POST /api/auth/register**
@@ -195,7 +196,7 @@ Response (200 OK):
 ```
 
 Error (400 Bad Request):
-- Username already taken, email in use, or email required
+- Email already in use, or email required
 
 ### Forgot Password Endpoint
 **POST /api/auth/forgot-password**
@@ -400,19 +401,19 @@ Response (403 Forbidden):
 
 ### User Story: Login Workflow
 **Given** a user with valid credentials registered in the system
-**When** user POSTs to /api/auth/login with username & password
-**Then** API returns 200 OK with JWT token valid for 24 hours
+**When** user POSTs to /api/auth/login with email & password
+**Then** API returns 200 OK with JWT token valid for 15 minutes
 
-**And** token can be decoded to extract username
+**And** token can be decoded to extract email (JWT sub claim)
 **And** token signature verifies with configured jwtSecret
 **And** subsequent requests with Authorization header are authenticated
 
 ### User Story: Registration Workflow
-**Given** a unique username not in the system
+**Given** a unique email not in the system
 **When** user POSTs to /api/auth/register with credentials & roles
 **Then** user account created with BCrypt-encoded password
 **And** user assigned to specified roles
-**And** username duplicate attempt returns 400 Bad Request
+**And** duplicate email attempt returns 400 Bad Request (duplicate username allowed)
 
 ### User Story: Role-Based Access
 **Given** a user with ROLE_ADMIN role

@@ -118,12 +118,12 @@ jwt-spring-security/
 - Route: `/api/auth`
 - Annotations: @CrossOrigin(origins="*", maxAge=3600), @RestController, @RequestMapping
 - **Endpoints:**
-  - **POST /login** (accepts User, returns JwtResponseDto)
-    - Authenticates via AuthenticationManager
+  - **POST /login** (accepts LoginRequestDto with email+password, returns JwtResponseDto)
+    - Authenticates via AuthenticationManager using email as principal
     - Generates access token + refresh token
-    - Returns id, token, refreshToken, username, name, roles
+    - Returns id, token, refreshToken, email, username, name, roles
   - **POST /register** (accepts RegisterDto, returns String)
-    - Validates username & email uniqueness
+    - Validates email uniqueness only (duplicate usernames allowed)
     - Validates email required field
     - Encodes password, creates/assigns roles
     - Saves user via UserService
@@ -151,7 +151,7 @@ jwt-spring-security/
 - **Table:** users
 - **Columns:**
   - id (BIGSERIAL, GenerationType.IDENTITY)
-  - username (String, unique)
+  - username (String, not unique - duplicates allowed)
   - email (String, unique)
   - password (String, BCrypt-encoded)
   - fullName (String)
@@ -202,8 +202,12 @@ jwt-spring-security/
 ### 5. Data Transfer Objects
 
 **JwtResponseDto.java** (~45 lines)
-- **Fields:** id (Long), token (String), refreshToken (String), username (String), name (String), roles (Collection<? extends GrantedAuthority>)
+- **Fields:** id (Long), token (String), refreshToken (String), email (String), username (String), name (String), roles (Collection<? extends GrantedAuthority>)
 - **Purpose:** Response payload for login endpoint
+
+**LoginRequestDto.java** (~15 lines)
+- **Fields:** email (String), password (String)
+- **Purpose:** Request payload for login endpoint (replaces raw User entity)
 
 **RegisterDto.java** (~35 lines)
 - **Fields:** username (String), email (String), password (String), fullName (String), roles (Set<Role>)
@@ -236,14 +240,14 @@ jwt-spring-security/
 - @Component
 - Injected: @Value("${namnd.app.jwtSecret}"), @Value("${namnd.app.jwtExpiration}"), @Value("${namnd.app.jwtRefreshExpiration}")
 - **Methods:**
-  - `generateTokenLogin(Authentication)` - Generates 15-min access token with JTI
-  - `generateTokenFromUsername(String)` - Generates access token from username
+  - `generateTokenLogin(Authentication)` - Generates 15-min access token with JTI (sub = email)
+  - `generateTokenFromEmail(String)` - Generates access token from email (used on token refresh)
   - `validateJwtToken(String)` - Validates signature & expiration
   - `validateJwtTokenWithBlacklist(String)` - Validates & checks Redis blacklist
-  - `getUserNameFromJwtToken(String)` - Extracts username claim
+  - `getEmailFromJwtToken(String)` - Extracts email from JWT sub claim
   - `getJtiFromToken(String)` - Extracts JTI (JWT ID) claim
   - `getExpirationFromToken(String)` - Extracts expiration date
-- **Note:** No scheduled cleanup tasks (Redis auto-expires keys via TTL)
+- **Note:** JWT sub claim = email (not username). No scheduled cleanup (Redis auto-TTL)
 
 **RefreshTokenService.java** (interface)
 - **Methods:**
@@ -306,18 +310,18 @@ jwt-spring-security/
 - Extends UserDetailsService (Spring Security)
 - **Methods:**
   - save(User)
-  - findByUserName(String) - Returns Optional<User>
-  - existsByUsername(String) - Returns boolean
+  - findByEmail(String) - Returns Optional<User>
+  - existsByEmail(String) - Returns boolean
 
 **UserServiceImpl.java** (~50 lines)
 - @Service, implements UserService
 - Injected: UserRepository, PasswordEncoder
 - **Methods:**
   - save(User) - Delegates to repo.save()
-  - findByUserName(String) - Calls repo.findByUsername()
-  - existsByUsername(String) - Calls repo.existsByUsername()
+  - findByEmail(String) - Calls repo.findByEmail()
+  - existsByEmail(String) - Calls repo.existsByEmail()
   - loadUserByUsername(String) (from UserDetailsService)
-    - Loads User from database
+    - Queries by email (parameter is email, not username)
     - Returns UserPrinciple wrapping user
 
 **RoleService.java** (interface, ~15 lines)
@@ -336,10 +340,10 @@ jwt-spring-security/
 **UserRepository.java** (interface)
 - Extends JpaRepository<User, Long>
 - **Methods:**
-  - Optional<User> findByUsername(String)
-  - boolean existsByUsername(String)
-  - Optional<User> findByEmail(String)
-  - boolean existsByEmail(String)
+  - Optional<User> findByUsername(String) - exists but not used for login
+  - boolean existsByUsername(String) - exists but not used for registration check
+  - Optional<User> findByEmail(String) - primary lookup (login, password reset)
+  - boolean existsByEmail(String) - used for registration uniqueness check
 
 **RoleRepository.java** (interface)
 - Extends JpaRepository<Role, Long>

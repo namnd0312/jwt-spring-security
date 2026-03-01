@@ -17,6 +17,8 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import javax.validation.Valid;
+
 import javax.servlet.http.HttpServletRequest;
 import java.util.Date;
 import java.util.Optional;
@@ -55,12 +57,12 @@ public class AuthController {
     private BlacklistedTokenService blacklistedTokenService;
 
     @PostMapping("/login")
-    public ResponseEntity<?> authenticateUser(@RequestBody User user) {
+    public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequestDto loginRequest) {
 
         Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(
-                        user.getUsername(),
-                        user.getPassword()
+                        loginRequest.getEmail(),
+                        loginRequest.getPassword()
                 )
         );
 
@@ -68,7 +70,8 @@ public class AuthController {
 
         String jwt = jwtService.generateTokenLogin(authentication);
         UserDetails userDetails = (UserDetails) authentication.getPrincipal();
-        User currentUser = userService.findByUserName(user.getUsername()).get();
+        User currentUser = userService.findByEmail(loginRequest.getEmail())
+                .orElseThrow(() -> new org.springframework.security.core.userdetails.UsernameNotFoundException("User not found"));
 
         RefreshToken refreshToken = refreshTokenService.createRefreshToken(currentUser.getId());
 
@@ -76,18 +79,14 @@ public class AuthController {
                 currentUser.getId(),
                 jwt,
                 refreshToken.getToken(),
-                userDetails.getUsername(),
+                currentUser.getEmail(),
+                currentUser.getUsername(),
                 currentUser.getFullName(),
                 userDetails.getAuthorities()));
     }
 
     @PostMapping("/register")
     public ResponseEntity<String> registerUser(@RequestBody RegisterDto registerDto) {
-        if (userService.existsByUsername(registerDto.getUsername())) {
-            return new ResponseEntity<>("Fail -> Username is already taken!",
-                    HttpStatus.BAD_REQUEST);
-        }
-
         // Validate email: required and unique
         if (registerDto.getEmail() == null || registerDto.getEmail().trim().isEmpty()) {
             return new ResponseEntity<>("Fail -> Email is required!",
@@ -151,7 +150,7 @@ public class AuthController {
                     .rotateRefreshToken(tokenOptional.get());
             User user = newRefreshToken.getUser();
 
-            String newAccessToken = jwtService.generateTokenFromUsername(user.getUsername());
+            String newAccessToken = jwtService.generateTokenFromEmail(user.getEmail());
 
             return ResponseEntity.ok(new TokenRefreshResponseDto(
                     newAccessToken, newRefreshToken.getToken()));
@@ -179,8 +178,8 @@ public class AuthController {
         blacklistedTokenService.blacklistToken(jti, tokenExpiry);
 
         // Delete the user's refresh token
-        String username = jwtService.getUserNameFromJwtToken(jwt);
-        Optional<User> userOptional = userService.findByUserName(username);
+        String email = jwtService.getEmailFromJwtToken(jwt);
+        Optional<User> userOptional = userService.findByEmail(email);
         userOptional.ifPresent(user -> refreshTokenService.deleteByUserId(user.getId()));
 
         return ResponseEntity.ok("Logged out successfully.");

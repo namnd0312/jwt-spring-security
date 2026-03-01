@@ -9,10 +9,6 @@ public interface UserService extends UserDetailsService {
 
     void save(User user);
 
-    Optional<User> findByUserName(String userName);
-
-    Boolean existsByUsername(String userName);
-
     Optional<User> findByEmail(String email);
 
     Boolean existsByEmail(String email);

@@ -15,15 +15,21 @@ public class UserPrinciple implements UserDetails {
 
     private Long id;
 
-    private String username;
+    // The display name (username field from User entity)
+    private String displayName;
+
+    // Email is used as the Spring Security principal
+    private String email;
 
     private String password;
 
     private Collection<? extends GrantedAuthority> roles;
 
-    public UserPrinciple(Long id, String username, String password, Collection<? extends GrantedAuthority> roles) {
+    public UserPrinciple(Long id, String displayName, String email, String password,
+                         Collection<? extends GrantedAuthority> roles) {
         this.id = id;
-        this.username = username;
+        this.displayName = displayName;
+        this.email = email;
         this.password = password;
         this.roles = roles;
     }
@@ -31,20 +37,37 @@ public class UserPrinciple implements UserDetails {
     public UserPrinciple() {
     }
 
-    public static UserPrinciple build(User user){
+    public static UserPrinciple build(User user) {
         List<GrantedAuthority> authorities = user.getRoles().stream()
                 .map(role -> new SimpleGrantedAuthority(role.getName()))
                 .collect(Collectors.toList());
 
-        return new UserPrinciple(user.getId(),
+        return new UserPrinciple(
+                user.getId(),
                 user.getUsername(),
+                user.getEmail(),
                 user.getPassword(),
                 authorities);
     }
 
+    /**
+     * Returns email as the Spring Security principal identifier.
+     * Authentication is email-based.
+     */
     @Override
     public String getUsername() {
-        return username;
+        return email;
+    }
+
+    /**
+     * Returns the display name (username field from User entity).
+     */
+    public String getDisplayName() {
+        return displayName;
+    }
+
+    public String getEmail() {
+        return email;
     }
 
     @Override
@@ -84,5 +107,10 @@ public class UserPrinciple implements UserDetails {
 
         UserPrinciple user = (UserPrinciple) o;
         return Objects.equals(id, user.id);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(id);
     }
 }

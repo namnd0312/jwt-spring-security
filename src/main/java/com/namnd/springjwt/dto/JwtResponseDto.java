@@ -12,6 +12,8 @@ public class JwtResponseDto {
 
     private String type = "Bearer";
 
+    private String email;
+
     private String username;
 
     private String name;
@@ -23,19 +25,22 @@ public class JwtResponseDto {
     public JwtResponseDto() {
     }
 
-    public JwtResponseDto(Long id, String token, String username, String name, Collection<? extends GrantedAuthority> roles) {
+    public JwtResponseDto(Long id, String token, String email, String username, String name,
+                          Collection<? extends GrantedAuthority> roles) {
         this.id = id;
         this.token = token;
+        this.email = email;
         this.username = username;
         this.name = name;
         this.roles = roles;
     }
 
-    public JwtResponseDto(Long id, String token, String refreshToken, String username,
-                          String name, Collection<? extends GrantedAuthority> roles) {
+    public JwtResponseDto(Long id, String token, String refreshToken, String email,
+                          String username, String name, Collection<? extends GrantedAuthority> roles) {
         this.id = id;
         this.token = token;
         this.refreshToken = refreshToken;
+        this.email = email;
         this.username = username;
         this.name = name;
         this.roles = roles;
@@ -63,6 +68,14 @@ public class JwtResponseDto {
 
     public void setType(String type) {
         this.type = type;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
     }
 
     public String getUsername() {

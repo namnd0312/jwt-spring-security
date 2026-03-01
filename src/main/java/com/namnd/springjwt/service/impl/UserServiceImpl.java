@@ -24,16 +24,6 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public Optional<User> findByUserName(String userName) {
-        return userRepository.findByUsername(userName);
-    }
-
-    @Override
-    public Boolean existsByUsername(String userName) {
-        return userRepository.existsByUsername(userName);
-    }
-
-    @Override
     public Optional<User> findByEmail(String email) {
         return userRepository.findByEmail(email);
     }
@@ -43,13 +33,16 @@ public class UserServiceImpl implements UserService {
         return userRepository.existsByEmail(email);
     }
 
+    /**
+     * Loads user by email for Spring Security authentication.
+     * The "username" parameter here is actually the email address.
+     */
     @Override
-    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+    public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
+        Optional<User> user = userRepository.findByEmail(email);
 
-        Optional<User> user = userRepository.findByUsername(username);
-
-        if(!user.isPresent()){
-            throw new UsernameNotFoundException(username);
+        if (!user.isPresent()) {
+            throw new UsernameNotFoundException("User not found with email: " + email);
         }
 
         return UserPrinciple.build(user.get());
