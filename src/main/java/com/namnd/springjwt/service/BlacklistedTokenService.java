@@ -7,6 +7,4 @@ public interface BlacklistedTokenService {
     void blacklistToken(String jti, Date expiryDate);
 
     boolean isTokenBlacklisted(String jti);
-
-    void cleanupExpiredTokens();
 }

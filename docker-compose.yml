@@ -13,6 +13,13 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
+  redis-service:
+    image: 'redis:7-alpine'
+    ports:
+      - "6379:6379"
+    networks:
+      - my-net
+    restart: unless-stopped
   ms-authentication-service:
     build:
       context: ./
@@ -23,6 +30,7 @@ services:
       - my-net
     depends_on:
       - postgres-service
+      - redis-service
 #  angular:
 #    image: angular-test
 #    ports:

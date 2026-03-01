@@ -1,51 +1,49 @@
 package com.namnd.springjwt.service.impl;
 
-import com.namnd.springjwt.model.BlacklistedToken;
-import com.namnd.springjwt.model.TokenType;
-import com.namnd.springjwt.repository.BlacklistedTokenRepository;
+import com.namnd.springjwt.config.RedisKeyPrefix;
 import com.namnd.springjwt.service.BlacklistedTokenService;
+import com.namnd.springjwt.service.RedisService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class BlacklistedTokenServiceImpl implements BlacklistedTokenService {
 
     private static final Logger logger = LoggerFactory.getLogger(BlacklistedTokenServiceImpl.class);
 
-    @Autowired
-    private BlacklistedTokenRepository blacklistedTokenRepository;
+    private final RedisService redisService;
+
+    public BlacklistedTokenServiceImpl(RedisService redisService) {
+        this.redisService = redisService;
+    }
 
     @Override
-    @Transactional
     public void blacklistToken(String jti, Date expiryDate) {
-        if (blacklistedTokenRepository.existsByJti(jti)) {
+        long ttlSeconds = (expiryDate.getTime() - System.currentTimeMillis()) / 1000;
+
+        if (ttlSeconds <= 0) {
+            logger.debug("Token already expired, skipping blacklist (JTI: {})", jti);
             return;
         }
 
-        BlacklistedToken blacklistedToken = new BlacklistedToken();
-        blacklistedToken.setJti(jti);
-        blacklistedToken.setTokenType(TokenType.ACCESS);
-        blacklistedToken.setExpiryDate(expiryDate);
-        blacklistedTokenRepository.save(blacklistedToken);
-        logger.debug("Token blacklisted (JTI), expires at: {}", expiryDate);
+        String key = RedisKeyPrefix.BLACKLIST + jti;
+        redisService.set(key, "1", ttlSeconds, TimeUnit.SECONDS);
+        logger.debug("Token blacklisted (JTI: {}), TTL: {}s", jti, ttlSeconds);
     }
 
     @Override
     public boolean isTokenBlacklisted(String jti) {
-        return blacklistedTokenRepository.existsByJti(jti);
-    }
-
-    @Override
-    @Transactional
-    @Scheduled(fixedRate = 3600000) // Run every hour
-    public void cleanupExpiredTokens() {
-        blacklistedTokenRepository.deleteByExpiryDateBefore(new Date());
-        logger.info("Expired blacklisted tokens cleaned up");
+        try {
+            String key = RedisKeyPrefix.BLACKLIST + jti;
+            return Boolean.TRUE.equals(redisService.hasKey(key));
+        } catch (Exception e) {
+            // Fail-closed: deny token if Redis is unavailable (security requirement)
+            logger.error("Redis unavailable during blacklist check (JTI: {}). Denying request.", jti);
+            return true;
+        }
     }
 }

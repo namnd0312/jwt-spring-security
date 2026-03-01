@@ -69,6 +69,12 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  │  └─ getUserNameFromJwtToken(String)         │   │
 │  └────────────────────────────────────────────┘   │
 │  ┌────────────────────────────────────────────┐   │
+│  │  BlacklistedTokenServiceImpl                 │   │
+│  │  ├─ delegates to RedisService               │   │
+│  │  ├─ blacklistToken(jti, expiry)             │   │
+│  │  └─ isTokenBlacklisted(jti)                 │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
 │  │  RoleService (interface)                    │   │
 │  │  ├─ save(Role)                              │   │
 │  │  ├─ findByName(String)                      │   │
@@ -77,6 +83,35 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 │  ┌────────────────────────────────────────────┐   │
 │  │  RoleServiceImpl                             │   │
 │  │  └─ delegates to RoleRepository              │   │
+│  └────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────┐
+│          SHARED UTILITIES LAYER (Redis)              │
+│  ┌────────────────────────────────────────────┐   │
+│  │  RedisService (interface, 46 lines)        │   │
+│  │  ├─ Key-Value: set, get, delete, expire    │   │
+│  │  ├─ Hash: hSet, hGet, hGetAll, hDelete     │   │
+│  │  ├─ List: lPush, rPush, lRange, lLen       │   │
+│  │  ├─ Set: sAdd, sMembers, sIsMember         │   │
+│  │  ├─ Pub/Sub: publish(channel, message)     │   │
+│  │  └─ Lock: tryLock(key, timeout), unlock()  │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  RedisServiceImpl (276 lines)                │   │
+│  │  ├─ Injected: StringRedisTemplate           │   │
+│  │  ├─ Injected: RedisTemplate<String, Object>│   │
+│  │  ├─ Try-catch error handling per method     │   │
+│  │  └─ Jackson2Json serialization              │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  RedisKeyPrefix (constants)                 │   │
+│  │  ├─ BLACKLIST = "blacklist:"                │   │
+│  │  └─ LOCK = "lock:"                          │   │
+│  └────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────┐   │
+│  │  RedisConfig (@Configuration)               │   │
+│  │  └─ Provides RedisTemplate bean             │   │
 │  └────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
                            │
@@ -339,9 +374,10 @@ CLIENT                           SERVER
   │                                │  └─ Extract JTI claim
   │                                │
   │                                ├─ BlacklistedTokenService.blacklistToken()
-  │                                │  ├─ Create BlacklistedToken(jti)
-  │                                │  ├─ Set expiry to token expiry
-  │                                │  └─ Save to DB
+  │                                │  ├─ RedisService.set(key, "1", ttl)
+  │                                │  │  └─ Write to Redis: blacklist:{jti}=1
+  │                                │  ├─ Set TTL = token expiration epoch
+  │                                │  └─ On Redis error: fail-closed (reject token)
   │                                │
   │                                ├─ JwtService.getUserNameFromJwtToken()
   │                                │  └─ Extract username
@@ -356,7 +392,7 @@ CLIENT                           SERVER
   │                                 │
   └─ Clear tokens locally ────────┘
 
-  (Scheduled: JwtService.cleanupExpiredBlacklistedTokens() runs hourly)
+  (Redis auto-expires blacklist:{jti} when TTL elapses)
 ```
 
 ## Data Model
@@ -390,14 +426,22 @@ CLIENT                           SERVER
 └──────────────────────┘     │ user_id (FK to users)    │
                              └──────────────────────────┘
 
-┌───────────────────────────┐  ┌──────────────────────────┐
-│ password_reset_tokens     │  │   blacklisted_tokens     │
-├───────────────────────────┤  ├──────────────────────────┤
-│ id (PK, BIGSERIAL)        │  │ id (PK, BIGSERIAL)       │
-│ token (VARCHAR, UNIQUE)   │  │ jti (VARCHAR, UNIQUE)    │
-│ expiry_date (TIMESTAMP)   │  │ expiry_date (TIMESTAMP)  │
-│ user_id (FK to users)     │  └──────────────────────────┘
+┌───────────────────────────┐
+│ password_reset_tokens     │
+├───────────────────────────┤
+│ id (PK, BIGSERIAL)        │
+│ token (VARCHAR, UNIQUE)   │
+│ expiry_date (TIMESTAMP)   │
+│ user_id (FK to users)     │
 └───────────────────────────┘
+
+REDIS (Key-Value Store)
+├──────────────────────────────────┐
+│ blacklist:{jti} (key)            │
+│ └─ value: 1 (presence check)     │
+│ └─ TTL: token expiration epoch   │
+│ └─ Auto-expires when TTL elapsed │
+└──────────────────────────────────┘
 ```
 
 ### Security Context Representation
@@ -531,33 +575,33 @@ http.cors()  // Enable CORS
 ### Docker Compose Setup
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  DOCKER HOST                             │
-├─────────────────────────────────────────────────────────┤
-│                                                           │
-│  ┌──────────────────┐          ┌────────────────────┐   │
-│  │ postgres-service │          │ ms-authentication- │   │
-│  │ (postgres:13.1)  │          │ service (built)     │   │
-│  │                  │          │                    │   │
-│  │ Port: 5432       │          │ Port: 8080          │   │
-│  │ Env:             │          │ Base: openjdk:11    │   │
-│  │ POSTGRES_USER    │          │ COPY spring-jwt.jar │   │
-│  │ POSTGRES_PASSWORD│          │ CMD: java -jar      │   │
-│  │                  │          │                    │   │
-│  │ Volume:          │◀────────▶│ depends_on:         │   │
-│  │ /docker/volumes/ │ network  │ postgres-service    │   │
-│  │                  │ (my-net) │                    │   │
-│  └──────────────────┘          └────────────────────┘   │
-│         ▲                                   ▲             │
-│         └───────────────────────────────────┘             │
-│              Network Bridge (my-net)                      │
-│                                                           │
-└─────────────────────────────────────────────────────────┘
-     ▲                                          ▲
-     │                                          │
-     │ Port 5432 (PostgreSQL)                   │ Port 8080 (HTTP)
-     │ (localhost:5432)                         │ (localhost:8080)
-     │                                          │
+┌──────────────────────────────────────────────────────────┐
+│                  DOCKER HOST                              │
+├──────────────────────────────────────────────────────────┤
+│                                                            │
+│  ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐ │
+│  │postgres-service  │  │redis-service │  │ ms-auth-     │ │
+│  │(postgres:13.1)   │  │ (redis:latest)   │ service      │ │
+│  │                  │  │              │  │ (built)      │ │
+│  │ Port: 5432       │  │Port: 6379    │  │Port: 8080    │ │
+│  │ Env:             │  │              │  │Base:openjdk11│ │
+│  │ POSTGRES_USER    │  │              │  │COPY .jar     │ │
+│  │ POSTGRES_PASSWORD│  │              │  │CMD: java -jar│ │
+│  │                  │  │              │  │              │ │
+│  │ Volume:          │  │              │  │depends_on:   │ │
+│  │ /docker/volumes/ │  │              │  │postgres,redis│ │
+│  │                  │  │              │  │              │ │
+│  └────────┬─────────┘  └────────┬─────┘  └──────┬───────┘ │
+│           │                     │                │         │
+│           └─────────────────────┼────────────────┘         │
+│                 Network Bridge (my-net)                    │
+│                                                            │
+└──────────────────────────────────────────────────────────┘
+     ▲                    ▲                    ▲
+     │                    │                    │
+     │ 5432               │ 6379               │ 8080
+     │ (PostgreSQL)       │ (Redis)            │ (HTTP)
+     │                    │                    │
 HOST MACHINE
 ```
 
@@ -690,7 +734,8 @@ Current design supports horizontal scaling:
 | Operation | Latency | Bottleneck |
 |-----------|---------|-----------|
 | Login (authenticate + generate token) | ~100-200ms | Database query for user |
-| Token Validation (on each request) | ~5-10ms | JWT parsing/signature check (no DB) |
+| Token Validation (on each request) | ~5-15ms | JWT parsing + Redis blacklist check |
+| Token Logout (blacklist) | ~2-5ms | Redis SET operation with TTL |
 | Register (create user + roles) | ~150-300ms | Multiple DB transactions |
 | Authorization Check (@PreAuthorize) | ~1-2ms | In-memory role lookup |
 
@@ -698,7 +743,8 @@ Current design supports horizontal scaling:
 - Implement user cache (Redis) to reduce DB queries on loadUserByUsername
 - Use connection pooling (HikariCP default)
 - Add database indexes on username, role name
-- Consider JWT caching with signature validation skipping (risky)
+- Redis connection pooling (Lettuce default)
+- Consider Redis Cluster for horizontal blacklist scaling
 
 ## Monitoring & Observability
 
@@ -746,9 +792,50 @@ Suggested metrics to track:
 | ORM | Spring Data JPA | via Boot | Object-relational mapping |
 | JWT | JJWT | 0.9.0 | Token generation/validation |
 | Password Hash | BCrypt | via Spring | Secure password encoding |
-| Database | PostgreSQL | 13.1+ | Data persistence |
+| Database | PostgreSQL | 13.1+ | Data persistence (users, roles, refresh/reset tokens) |
+| Cache/Blacklist | Redis | 7.x | Token blacklist (JTI) with auto-TTL |
 | Container | Docker | latest | Deployment container |
 | Runtime | OpenJDK | 11 | Java runtime |
+
+## Integration & Service Layer Architecture
+
+### RedisService Abstraction Layer
+
+**Purpose:** Unified interface for all Redis operations, reducing coupling between domain services and Redis.
+
+**Service Layer Boundaries:**
+
+```
+Domain Services (Authentication, Token, etc)
+         │
+         ▼
+    RedisService (interface)
+         │
+         ├─ RedisServiceImpl (implementation)
+         │  ├─ StringRedisTemplate
+         │  └─ RedisTemplate<String, Object>
+         │
+    RedisKeyPrefix (constants)
+         │
+         ▼
+    Spring Data Redis
+         │
+         ▼
+    Redis Server (TCP/6379)
+```
+
+**Usage Example (Token Blacklist):**
+- BlacklistedTokenServiceImpl uses RedisService (not raw StringRedisTemplate)
+- Uses RedisKeyPrefix.BLACKLIST constant for key prefix
+- Calls: `redisService.set(key, "1", ttlSeconds, TimeUnit.SECONDS)`
+- Error handling: Try-catch wraps all operations; fail-closed on errors
+
+**Benefits:**
+- Single point of configuration (RedisConfig)
+- Consistent error handling across all Redis operations
+- Easy to switch Redis implementations (Lettuce/Jedis)
+- Key namespacing prevents collisions (RedisKeyPrefix)
+- Reusable for future features (caching, rate limiting, distributed locks)
 
 ## Dependency Graph
 
@@ -760,6 +847,8 @@ Application
 │  ├─ Spring Data JPA
 │  │  └─ Hibernate
 │  │     └─ PostgreSQL Driver
+│  ├─ Spring Data Redis
+│  │  └─ Lettuce (Redis client)
 │  ├─ Spring Web (MVC, REST)
 │  │  └─ Embedded Tomcat
 │  └─ Logging (SLF4J → Log4j2)
@@ -769,19 +858,24 @@ Application
 │
 ├─ Lombok (annotation processor)
 │
-└─ PostgreSQL Driver
-   └─ JDBC
+├─ PostgreSQL Driver
+│  └─ JDBC
+│
+└─ Redis Client (via Spring Data Redis)
+   └─ Lettuce
 ```
 
 ## Architecture Decisions Rationale
 
 | Decision | Chosen | Rationale | Trade-off |
 |----------|--------|-----------|-----------|
-| Stateless vs Sessions | Stateless JWT | Microservices-ready, no server state | Larger token, can't invalidate early |
+| Stateless vs Sessions | Stateless JWT | Microservices-ready, no server state | Larger token, can't invalidate early without blacklist |
 | HS512 vs RS256 | HS512 | Simpler operations, all servers share secret | Less secure for distributed trust |
 | Eager vs Lazy Roles | Eager | Roles needed in SecurityContext immediately | Always loads roles even if unused |
 | Manual vs Auto Schema | Manual | Version control, database as source of truth | Extra maintenance burden |
 | Single DB vs Sharding | Single | Simpler for now, YAGNI principle | Scalability ceiling at DB level |
+| Blacklist Storage | Redis | Fast O(1) lookup, auto-TTL eliminates cleanup jobs | New infrastructure dependency |
+| Blacklist Error Handling | Fail-Closed | Conservative security: reject token if Redis unavailable | May block legitimate requests during outage |
 
 ## Future Architecture Evolution
 

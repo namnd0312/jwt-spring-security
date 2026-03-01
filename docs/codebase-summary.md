@@ -64,7 +64,13 @@ jwt-spring-security/
 - Enables WAR deployment to Tomcat
 - Returns SpringBootServletInitializer.configure(application)
 
-### 2. Security Configuration
+### 2. Configuration Classes
+
+**RedisConfig.java** (24 lines)
+- @Configuration class
+- Provides RedisTemplate<String, Object> bean
+- Configures serializers: StringRedisSerializer for keys, Jackson2JsonRedisSerializer for values
+- Auto-wired by Spring into RedisServiceImpl
 
 **SecurityConfig.java** (82 lines)
 - Extends WebSecurityConfigurerAdapter
@@ -83,6 +89,12 @@ jwt-spring-security/
   - Session policy: STATELESS
   - CORS enabled
   - Exception handling via CustomAccesDeniedHandler
+
+**RedisKeyPrefix.java** (15 lines)
+- @final utility class with constants
+- BLACKLIST = "blacklist:" (JWT token blacklist prefix)
+- LOCK = "lock:" (distributed lock prefix)
+- Prevents Redis key collisions across features
 
 **JwtAuthenticationFilter.java** (~60 lines)
 - Extends OncePerRequestFilter
@@ -167,16 +179,6 @@ jwt-spring-security/
 - **Methods:**
   - isExpired() - checks token validity
 
-**BlacklistedToken.java** (~25 lines)
-- @Entity, @Data (Lombok)
-- **Table:** blacklisted_tokens
-- **Columns:**
-  - id (BIGSERIAL)
-  - jti (String, unique) - JWT ID claim
-  - expiryDate (LocalDateTime)
-
-**TokenType.java** (enum)
-- ACCESS, REFRESH - discriminator for token types
 
 **Role.java** (~20 lines)
 - @Entity, @Data (Lombok)
@@ -231,18 +233,17 @@ jwt-spring-security/
 ### 6. Services
 
 **JwtService.java** (~120 lines)
-- @Component, @EnableScheduling
+- @Component
 - Injected: @Value("${namnd.app.jwtSecret}"), @Value("${namnd.app.jwtExpiration}"), @Value("${namnd.app.jwtRefreshExpiration}")
 - **Methods:**
   - `generateTokenLogin(Authentication)` - Generates 15-min access token with JTI
   - `generateTokenFromUsername(String)` - Generates access token from username
   - `validateJwtToken(String)` - Validates signature & expiration
-  - `validateJwtTokenWithBlacklist(String)` - Validates & checks blacklist
+  - `validateJwtTokenWithBlacklist(String)` - Validates & checks Redis blacklist
   - `getUserNameFromJwtToken(String)` - Extracts username claim
   - `getJtiFromToken(String)` - Extracts JTI (JWT ID) claim
   - `getExpirationFromToken(String)` - Extracts expiration date
-- **Scheduled Tasks:**
-  - `cleanupExpiredBlacklistedTokens()` - Runs hourly, deletes expired entries
+- **Note:** No scheduled cleanup tasks (Redis auto-expires keys via TTL)
 
 **RefreshTokenService.java** (interface)
 - **Methods:**
@@ -277,12 +278,29 @@ jwt-spring-security/
 
 **BlacklistedTokenService.java** (interface)
 - **Methods:**
-  - blacklistToken(String jti, Date expiry) - Adds to blacklist
-  - isBlacklisted(String jti) - Checks membership
+  - blacklistToken(String jti, Date expiry) - Adds to Redis blacklist
+  - isTokenBlacklisted(String jti) - Checks Redis membership
 
-**BlacklistedTokenServiceImpl.java** (~30 lines)
-- @Service, injected BlacklistedTokenRepository
-- Simple save/find operations
+**BlacklistedTokenServiceImpl.java** (~50 lines)
+- @Service, injected RedisService
+- Uses RedisKeyPrefix.BLACKLIST constant + JTI
+- Sets auto-TTL based on token expiry date via RedisService.set()
+- Fail-closed error handling: returns true on Redis outage (reject token)
+
+**RedisService.java** (interface, ~46 lines)
+- Shared utility for all Redis operations
+- **Key-Value ops:** set, get, delete, hasKey, expire, getExpire
+- **Hash ops:** hSet, hGet, hGetAll, hDelete, hHasKey
+- **List ops:** lPush, rPush, lRange, lLen
+- **Set ops:** sAdd, sMembers, sIsMember, sRemove
+- **Pub/Sub:** publish(channel, message)
+- **Distributed Lock:** tryLock, unlock
+
+**RedisServiceImpl.java** (~276 lines)
+- @Service, implements RedisService
+- Injected: StringRedisTemplate, RedisTemplate<String, Object>
+- Try-catch error handling on every method (fail-safe returns)
+- Uses Jackson2JsonRedisSerializer for JSON serialization
 
 **UserService.java** (interface, ~20 lines)
 - Extends UserDetailsService (Spring Security)
@@ -340,11 +358,6 @@ jwt-spring-security/
   - Optional<PasswordResetToken> findByToken(String)
   - void deleteByUserId(Long userId)
 
-**BlacklistedTokenRepository.java** (interface)
-- Extends JpaRepository<BlacklistedToken, Long>
-- **Methods:**
-  - Optional<BlacklistedToken> findByJti(String)
-  - void deleteAllByExpiryDateBefore(LocalDateTime date)
 
 ## Configuration Files
 
@@ -358,6 +371,7 @@ jwt-spring-security/
   - spring-boot-starter-data-jpa
   - spring-boot-starter-security
   - spring-boot-starter-web
+  - spring-boot-starter-data-redis
   - spring-boot-devtools (runtime)
   - postgresql (runtime)
   - lombok (optional)
@@ -375,6 +389,8 @@ jwt-spring-security/
 - spring.datasource.url: jdbc:postgresql://localhost:5432/testdb
 - spring.datasource.username: postgres
 - spring.datasource.password: postgres
+- spring.redis.host: localhost
+- spring.redis.port: 6379
 - spring.mail.host: smtp.gmail.com, port: 587 (for password reset emails)
 - namnd.app.jwtSecret: bezKoderSecretKey
 - namnd.app.jwtExpiration: 900000 (15 minutes in milliseconds)
@@ -393,7 +409,8 @@ jwt-spring-security/
 **docker-compose.yml** (36 lines)
 - Services:
   - postgres-service (postgres:13.1-alpine, port 5432)
-  - ms-authentication-service (builds from Dockerfile, port 8080, depends_on postgres)
+  - redis-service (redis:latest, port 6379)
+  - ms-authentication-service (builds from Dockerfile, port 8080, depends_on postgres, redis)
 - Network: my-net (bridge)
 - Volumes: /Users/admin/Desktop/DEV/DOCKER/docker-volumes (persistent)
 - Restart policy: unless-stopped
@@ -415,14 +432,16 @@ jwt-spring-security/
 |--------|-------|
 | Total Java Classes | 38 |
 | Total Interfaces | 8 (UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService) |
-| Total Enums | 1 (TokenType) |
+| Total Enums | 0 |
 | Largest Class | AuthController (~197 lines) |
-| New Entities | 4 (RefreshToken, PasswordResetToken, BlacklistedToken, TokenType) |
-| New Services | 4 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService) |
-| New Repositories | 3 (RefreshTokenRepository, PasswordResetTokenRepository, BlacklistedTokenRepository) |
+| New Entities | 3 (RefreshToken, PasswordResetToken) |
+| New Services | 6 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, RedisService) |
+| New Service Impls | 4 (RefreshTokenServiceImpl, PasswordResetServiceImpl, EmailServiceImpl, BlacklistedTokenServiceImpl, RedisServiceImpl) |
+| New Config Classes | 2 (RedisConfig, RedisKeyPrefix) |
+| New Repositories | 2 (RefreshTokenRepository, PasswordResetTokenRepository) |
 | New DTOs | 4 (ForgotPasswordDto, ResetPasswordDto, RefreshTokenRequestDto, TokenRefreshResponseDto) |
-| Package Depth | 3-4 levels (com.namnd.springjwt.{service.impl, dto.mapper, config.{filter,security,custom}, util}) |
-| Scheduled Tasks | 1 (hourly blacklist cleanup) |
+| Package Depth | 3-4 levels (com.namnd.springjwt.{service.impl, dto.mapper, config, util}) |
+| Scheduled Tasks | 0 (Redis auto-TTL replaces scheduled cleanup) |
 | Test Coverage | 1 smoke test (SpringJwtApplicationTests) |
 
 ## External Dependencies
@@ -434,6 +453,7 @@ jwt-spring-security/
 | Spring Mail | included | - | Active maintenance |
 | JJWT | 0.9.0 | ~0.1 | Stable (newer: 0.11.x, 0.12.x available) |
 | PostgreSQL Driver | ~42.x | ~0.9 | Latest |
+| Redis | via Spring Data Redis | ~7.x | NoSQL cache for token blacklist |
 | Lombok | 1.18.30 | ~1.8 | JDK 21 compatible |
 | JavaMail | included | - | JDK built-in |
 
@@ -460,11 +480,12 @@ docker build -t ms-authentication-service .
 - Lombok reduces boilerplate
 - Stateless design with token rotation supports scaling
 - Token refresh mechanism with rotation
-- JTI-based blacklisting for logout
+- Redis-based JTI blacklisting for logout (no scheduled cleanup needed)
 - Email-driven password reset flow
-- Scheduled cleanup of expired tokens
+- Auto-TTL on Redis keys eliminates data cleanup jobs
 - Configurable token expiration times
 - Email validation required on registration
+- Fail-closed blacklist error handling (rejects tokens on Redis outage)
 
 **Areas for Improvement:**
 - Limited test coverage (1 smoke test)
@@ -476,6 +497,7 @@ docker build -t ms-authentication-service .
 - Manual schema management (no migrations tracked)
 - Email service error handling could be more robust
 - No audit logging for sensitive operations
+- Redis connection resilience could be enhanced (circuit breaker)
 
 ## Deployment Artifacts
 
@@ -496,6 +518,7 @@ docker build -t ms-authentication-service .
 | System | Integration | Type |
 |--------|-----------|------|
 | PostgreSQL | Database | Synchronous (JDBC) |
+| Redis | Token Blacklist Cache | Synchronous (TCP) |
 | Spring Security | Authentication | Internal |
 | Spring Data JPA | ORM | Internal |
 | Log4j (via Spring) | Logging | Asynchronous |
