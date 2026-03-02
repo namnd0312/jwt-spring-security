@@ -3,16 +3,18 @@
 REST API authentication & authorization using JWT (JSON Web Tokens) with Spring Boot 2.6.4 and Spring Security.
 
 **Current Version:** 0.0.1-SNAPSHOT
-**Java:** 1.8 (source) | 11 (Docker) | 21 (JDK compatibility via Lombok 1.18.30)
-**Database:** PostgreSQL 13.1
+**Java:** 21 LTS
+**Spring Boot:** 3.4.3
+**Database:** PostgreSQL 16
+**Docker:** Eclipse Temurin 21 JRE on Alpine Linux
 **License:** Proprietary
 
 ## Quick Start
 
 ### Prerequisites
-- Java 8+ or Docker
-- Maven 3.6+
-- PostgreSQL 13+ (or use docker-compose)
+- Java 21 LTS (or Docker for containerized setup)
+- Maven 3.8+
+- PostgreSQL 16 (or use docker-compose for automated setup)
 
 ### Build & Run
 
@@ -160,14 +162,15 @@ curl -H "Authorization: Bearer eyJhbGc..." http://localhost:8080/api/protected
 ## Architecture
 
 **Stack:**
-- Spring Boot 2.6.4
-- Spring Security + JWT (JJWT 0.9.0)
+- Spring Boot 3.4.3
+- Spring Security 6.x + JWT (JJWT 0.12.6: api, impl, jackson)
 - Spring Data JPA + Hibernate
-- PostgreSQL + Flyway (manual DDL)
-- Spring Mail (for password reset emails)
+- PostgreSQL 16 (manual DDL)
+- Spring Mail (for password reset emails, jakarta.mail)
 - BCrypt password encoding
-- Lombok 1.18.30 (JDK 21 compatible)
-- Maven WAR packaging
+- Lombok (BOM-managed, JDK 21 compatible)
+- Maven JAR packaging (streamlined deployment)
+- Eclipse Temurin JDK 21 Docker image
 
 **Security:**
 - Stateless JWT authentication with refresh tokens
@@ -202,9 +205,11 @@ curl -H "Authorization: Bearer eyJhbGc..." http://localhost:8080/api/protected
 ```yaml
 server.port: 8080                          # Server port
 spring.datasource.url: jdbc:postgresql://localhost:5432/testdb
+spring.data.redis.host: localhost          # Changed from spring.redis.host (SB 3.x)
+spring.data.redis.port: 6379               # Changed from spring.redis.port (SB 3.x)
 spring.mail.host: smtp.gmail.com           # SMTP server for password reset emails
 spring.mail.port: 587
-namnd.app.jwtSecret: bezKoderSecretKey     # Token signing key
+namnd.app.jwtSecret: ${JWT_SECRET:bezKoderSecretKey}  # Base64-encoded with env var
 namnd.app.jwtExpiration: 900000            # 15 minutes in milliseconds
 namnd.app.jwtRefreshExpiration: 604800000  # 7 days in milliseconds
 namnd.app.passwordResetBaseUrl: http://localhost:3000/reset-password
@@ -212,6 +217,10 @@ namnd.app.activationBaseUrl: http://localhost:8080/api/auth/activate
 namnd.app.maxFailedAttempts: 5                    # Lock account after N failed logins
 namnd.app.lockDurationMs: 900000                  # Lock duration (default 15 minutes)
 ```
+**Key Changes from Spring Boot 2.x to 3.x:**
+- `spring.redis.*` → `spring.data.redis.*` (naming convention)
+- All `javax.*` imports → `jakarta.*` namespace
+- JWT secret now supports Base64 encoding with env var override
 
 **Override via environment:**
 ```bash

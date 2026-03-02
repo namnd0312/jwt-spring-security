@@ -1,9 +1,11 @@
 # Codebase Summary
 
 **Project:** jwt-spring-security
-**Generated:** February 2026
-**Total Java Files:** 38 (main) + 1 (test)
+**Generated:** March 2026 (post-Java 21 migration)
+**Total Java Files:** 37 (main) + 1 (test)
 **Total Lines of Code (approx):** ~4,200 LOC
+**Java Version:** 21 LTS
+**Spring Boot:** 3.4.3
 
 ## Directory Structure
 
@@ -13,7 +15,6 @@ jwt-spring-security/
 │   ├── main/
 │   │   ├── java/com/namnd/springjwt/
 │   │   │   ├── SpringJwtApplication.java (35 lines)
-│   │   │   ├── ServletInitializer.java (12 lines)
 │   │   │   ├── config/
 │   │   │   │   ├── security/SecurityConfig.java (82 lines)
 │   │   │   │   ├── filter/JwtAuthenticationFilter.java (~60 lines)
@@ -58,11 +59,7 @@ jwt-spring-security/
 - `@SpringBootApplication` main entry point
 - Scans packages under com.namnd.springjwt
 - Runs on port 8080 via application.yml
-
-**ServletInitializer.java** (12 lines)
-- Extends SpringBootServletInitializer
-- Enables WAR deployment to Tomcat
-- Returns SpringBootServletInitializer.configure(application)
+- Note: ServletInitializer.java removed (JAR-only packaging post-migration)
 
 ### 2. Configuration Classes
 
@@ -72,23 +69,25 @@ jwt-spring-security/
 - Configures serializers: StringRedisSerializer for keys, Jackson2JsonRedisSerializer for values
 - Auto-wired by Spring into RedisServiceImpl
 
-**SecurityConfig.java** (82 lines)
-- Extends WebSecurityConfigurerAdapter
-- Annotations: @Configuration, @EnableWebSecurity, @EnableGlobalMethodSecurity(prePostEnabled=true)
+**SecurityConfig.java** (updated for Spring Security 6.x)
+- Annotations: @Configuration, @EnableWebSecurity, @EnableMethodSecurity
+- **Method-Based Configuration** (replaces WebSecurityConfigurerAdapter pattern):
+  - Returns SecurityFilterChain bean (new Spring Security 6.x pattern)
+  - Uses HttpSecurity DSL (lambda configuration)
 - **Beans:**
   - `jwtAuthenticationFilter()` - Creates JWT filter
-  - `authenticationManagerBean()` - Exposes AuthenticationManager
+  - `authenticationManager(AuthenticationConfiguration)` - Exposes AuthenticationManager
   - `customAccesDeniedHandler()` - Custom 403 handler
   - `passwordEncoder()` - BCryptPasswordEncoder bean
-- **configure(AuthenticationManagerBuilder):** Wires UserService + PasswordEncoder
-- **configure(HttpSecurity):**
-  - Permits: /api/auth/** (public)
+- **Security Configuration:**
+  - Permits: /api/auth/** (public endpoints)
   - Requires auth: all other endpoints
-  - CSRF disabled
+  - CSRF disabled (appropriate for JWT API)
   - Adds JwtAuthenticationFilter before UsernamePasswordAuthenticationFilter
   - Session policy: STATELESS
   - CORS enabled
   - Exception handling via CustomAccesDeniedHandler
+- **Key Change:** @EnableGlobalMethodSecurity(prePostEnabled=true) → @EnableMethodSecurity
 
 **RedisKeyPrefix.java** (15 lines)
 - @final utility class with constants
@@ -424,60 +423,66 @@ jwt-spring-security/
 
 ## Configuration Files
 
-**pom.xml** (92 lines)
+**pom.xml** (updated for Java 21 & Spring Boot 3.4.3)
 - Group: com.namnd
 - Artifact: spring-jwt
 - Version: 0.0.1-SNAPSHOT
-- Packaging: war
-- Java: 1.8
+- Packaging: jar (changed from war)
+- Java: 21
 - **Dependencies:**
   - spring-boot-starter-data-jpa
-  - spring-boot-starter-security
-  - spring-boot-starter-web
+  - spring-boot-starter-security (6.x, includes Jakarta EE)
+  - spring-boot-starter-web (embedded Tomcat, no separate tomcat starter)
   - spring-boot-starter-data-redis
   - spring-boot-devtools (runtime)
-  - postgresql (runtime)
-  - lombok (optional)
-  - spring-boot-starter-tomcat (provided, for WAR)
+  - postgresql (latest driver)
+  - lombok (BOM-managed, JDK 21 compatible)
   - spring-boot-starter-test (test scope)
   - spring-security-test (test scope)
-  - jjwt 0.9.0
+  - jjwt 0.12.6: api + impl + jackson (3 split artifacts)
+- **Key Changes:**
+  - Removed spring-boot-starter-tomcat (provided) - embedded in web starter for JAR
+  - JJWT split into 3 modules: jjwt-api, jjwt-impl, jjwt-jackson
+  - All javax.* imports converted to jakarta.* namespace
 - **Plugins:**
   - spring-boot-maven-plugin (excludes Lombok)
 
-**application.yml** (~51 lines)
+**application.yml** (~51 lines, Spring Boot 3.4.3 format)
 - server.port: 8080
 - spring.jpa.hibernate.ddl-auto: create-drop (development), should be none (production)
 - spring.jpa.show-sql: true
 - spring.datasource.url: jdbc:postgresql://localhost:5432/testdb
 - spring.datasource.username: postgres
-- spring.datasource.password: postgres
-- spring.redis.host: localhost
-- spring.redis.port: 6379
+- spring.datasource.password: postgres (or use env var override)
+- spring.data.redis.host: localhost (changed from spring.redis.host in SB 3.x)
+- spring.data.redis.port: 6379 (changed from spring.redis.port in SB 3.x)
 - spring.mail.host: smtp.gmail.com, port: 587 (for password reset emails)
-- namnd.app.jwtSecret: bezKoderSecretKey
+- namnd.app.jwtSecret: ${JWT_SECRET:bezKoderSecretKey} (Base64-encoded with env var override)
 - namnd.app.jwtExpiration: 900000 (15 minutes in milliseconds)
 - namnd.app.jwtRefreshExpiration: 604800000 (7 days in milliseconds)
 - namnd.app.passwordResetBaseUrl: http://localhost:3000/reset-password
 - namnd.app.activationBaseUrl: http://localhost:8080/api/auth/activate
 - logging: DEBUG for com.namnd.springjwt, SQL queries
+- **Key Change:** spring.redis.* → spring.data.redis.* (Spring Boot 3.x convention)
 
 **roles.sql** (3 lines)
 - INSERT INTO roles: ROLE_USER, ROLE_PM, ROLE_ADMIN
 
-**Dockerfile** (18 lines)
-- Base: openjdk:11
+**Dockerfile** (18 lines, updated)
+- Base: eclipse-temurin:21-jre-alpine (changed from openjdk:11)
 - Copies target/spring-jwt.jar to /opt/app/spring-jwt.jar
 - ENTRYPOINT: java -jar spring-jwt.jar
+- Benefits: Smaller image, JDK 21 runtime, Alpine Linux base
 
-**docker-compose.yml** (36 lines)
+**docker-compose.yml** (36 lines, updated)
 - Services:
-  - postgres-service (postgres:13.1-alpine, port 5432)
+  - postgres-service (postgres:16-alpine, port 5432) [upgraded from 13.1]
   - redis-service (redis:latest, port 6379)
   - ms-authentication-service (builds from Dockerfile, port 8080, depends_on postgres, redis)
 - Network: my-net (bridge)
 - Volumes: /Users/admin/Desktop/DEV/DOCKER/docker-volumes (persistent)
 - Restart policy: unless-stopped
+- Note: Dockerfile now uses eclipse-temurin:21-jre-alpine base image
 
 ## Key Design Patterns
 
@@ -494,17 +499,16 @@ jwt-spring-security/
 
 | Metric | Value |
 |--------|-------|
-| Total Java Classes | 40 |
+| Total Java Classes | 39 (removed ServletInitializer) |
 | Total Interfaces | 11 (UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, ActivationService, AccountLockService) |
 | Total Enums | 0 |
 | Largest Class | AuthController (~230 lines) |
-| New Entities | 4 (RefreshToken, PasswordResetToken, ActivationToken) |
-| New Services | 8 (RefreshTokenService, PasswordResetService, EmailService, BlacklistedTokenService, RedisService, ActivationService, AccountLockService) |
-| New Service Impls | 6 (RefreshTokenServiceImpl, PasswordResetServiceImpl, EmailServiceImpl, BlacklistedTokenServiceImpl, RedisServiceImpl, ActivationServiceImpl, AccountLockServiceImpl) |
-| New Config Classes | 2 (RedisConfig, RedisKeyPrefix) |
-| New Repositories | 3 (RefreshTokenRepository, PasswordResetTokenRepository, ActivationTokenRepository) |
-| New DTOs | 4 (ForgotPasswordDto, ResetPasswordDto, RefreshTokenRequestDto, TokenRefreshResponseDto) |
-| Package Depth | 3-4 levels (com.namnd.springjwt.{service.impl, dto.mapper, config, util}) |
+| Key Entities | User, Role, RefreshToken, PasswordResetToken, ActivationToken |
+| Core Services | UserService, RoleService, JwtService, RefreshTokenService, PasswordResetService, EmailService, ActivationService, AccountLockService, BlacklistedTokenService, RedisService |
+| Config Classes | SecurityConfig, RedisConfig, RedisKeyPrefix |
+| Repositories | UserRepository, RoleRepository, RefreshTokenRepository, PasswordResetTokenRepository, ActivationTokenRepository |
+| DTOs | LoginRequestDto, JwtResponseDto, RegisterDto, ForgotPasswordDto, ResetPasswordDto, RefreshTokenRequestDto, TokenRefreshResponseDto |
+| Package Depth | 3-4 levels (com.namnd.springjwt.{service.impl, dto.mapper, config.security, config.filter, config.custom}) |
 | Scheduled Tasks | 0 (Redis auto-TTL replaces scheduled cleanup) |
 | Test Coverage | 1 smoke test (SpringJwtApplicationTests) |
 
@@ -512,14 +516,15 @@ jwt-spring-security/
 
 | Dependency | Version | Size (MB) | Security Status |
 |------------|---------|-----------|-----------------|
-| Spring Boot | 2.6.4 | - | LTS, active maintenance |
-| Spring Security | included | - | Active maintenance |
-| Spring Mail | included | - | Active maintenance |
-| JJWT | 0.9.0 | ~0.1 | Stable (newer: 0.11.x, 0.12.x available) |
+| Spring Boot | 3.4.3 | - | Latest LTS, active maintenance |
+| Spring Security | 6.x (via Boot) | - | Latest, SecurityFilterChain pattern |
+| Spring Mail | included | - | Active maintenance, jakarta.mail |
+| JJWT | 0.12.6 | ~0.5 (split artifacts) | Current, async API support |
 | PostgreSQL Driver | ~42.x | ~0.9 | Latest |
 | Redis | via Spring Data Redis | ~7.x | NoSQL cache for token blacklist |
-| Lombok | 1.18.30 | ~1.8 | JDK 21 compatible |
-| JavaMail | included | - | JDK built-in |
+| Lombok | BOM-managed | ~1.8 | JDK 21 compatible |
+| JavaMail | jakarta.mail (via Spring) | - | Jakarta EE standard |
+| Jakarta EE | 10+ | - | Namespace migration from javax.* |
 
 ## Build & Artifact
 

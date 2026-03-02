@@ -177,12 +177,26 @@ public String generateTokenLogin(Authentication authentication) {
 
 **Annotation Order:**
 ```java
-// ✓ Good: Framework annotations first
+// ✓ Good: Spring Boot 3.x / Spring Security 6.x pattern (NEW)
 @Configuration
 @EnableWebSecurity
-@EnableGlobalMethodSecurity(prePostEnabled = true)
-public class SecurityConfig extends WebSecurityConfigurerAdapter {
-    // ...
+@EnableMethodSecurity  // Replaces @EnableGlobalMethodSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        return http
+            .csrf().disable()
+            .cors()
+            .and()
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/auth/**").permitAll()
+                .anyRequest().authenticated()
+            )
+            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            .and()
+            .build();
+    }
 }
 
 // ✓ Good: Framework annotations first on class

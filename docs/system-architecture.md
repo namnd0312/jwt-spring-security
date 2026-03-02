@@ -2,8 +2,10 @@
 
 **Project:** jwt-spring-security
 **Version:** 0.0.1-SNAPSHOT
+**Java Version:** 21 LTS
+**Spring Boot:** 3.4.3
 **Architecture Pattern:** Layered Architecture with JWT Authentication
-**Last Updated:** February 2026
+**Last Updated:** March 2026 (post-Java 21 migration)
 
 ## Architecture Overview
 
@@ -32,12 +34,13 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 ┌───────▼────────────────────────────────────┐ │
 │  SECURITY LAYER                            │ │
 │ ┌──────────────────────────────────────┐  │ │
-│ │  SecurityConfig                      │  │ │
-│ │  - Filter chain configuration        │  │ │
-│ │  - PasswordEncoder (BCrypt)          │  │ │
-│ │  - AuthenticationManager             │  │ │
-│ │  - CSRF disabled, CORS enabled       │  │ │
-│ └──────────────────────────────────────┘  │ │
+│ │  SecurityConfig (Spring Security 6.x)   │ │
+│ │  - SecurityFilterChain bean pattern     │ │
+│ │  - @EnableMethodSecurity annotation     │ │
+│ │  - PasswordEncoder (BCrypt)             │ │
+│ │  - AuthenticationManager                │ │
+│ │  - CSRF disabled, CORS enabled          │ │
+│ └──────────────────────────────────────────┘  │ │
 │ ┌──────────────────────────────────────┐  │ │
 │ │  JwtAuthenticationFilter             │  │ │
 │ │  - Extracts Bearer token             │  │ │
@@ -161,7 +164,7 @@ JWT Spring Security is built on a **layered architecture** with stateless JWT-ba
 └─────────────────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────┐
-│         DATABASE LAYER (PostgreSQL 13.1)            │
+│         DATABASE LAYER (PostgreSQL 16)              │
 │  ┌─────────────────┐  ┌──────────┐  ┌────────────────┐ │
 │  │ users           │  │ roles    │  │ user_roles     │ │
 │  │ ─────────────── │  │ ──────── │  │ ────────────── │ │
@@ -647,7 +650,7 @@ http.cors()  // Enable CORS
 │                                                            │
 │  ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐ │
 │  │postgres-service  │  │redis-service │  │ ms-auth-     │ │
-│  │(postgres:13.1)   │  │ (redis:latest)   │ service      │ │
+│  │(postgres:16)     │  │ (redis:latest)   │ service      │ │
 │  │                  │  │              │  │ (built)      │ │
 │  │ Port: 5432       │  │Port: 6379    │  │Port: 8080    │ │
 │  │ Env:             │  │              │  │Base:openjdk11│ │
@@ -678,21 +681,23 @@ HOST MACHINE
 │     Docker Container                   │
 │  (ms-authentication-service)           │
 ├────────────────────────────────────────┤
-│  OpenJDK 11                             │
+│  Eclipse Temurin JDK 21 (Alpine Linux) │
 │  ├─ Java Heap Memory: configurable      │
 │  ├─ GC: G1GC (default)                  │
+│  ├─ Virtual threads support (Java 21)   │
 │  └─ JVM args: customizable              │
 │                                         │
 │  Spring Boot Application                │
 │  ├─ Embedded Tomcat (port 8080)         │
-│  ├─ Spring Boot: 2.6.4                  │
-│  ├─ Spring Security: configured         │
+│  ├─ Spring Boot: 3.4.3                  │
+│  ├─ Spring Security: 6.x                │
 │  └─ Logging: stdout/stderr              │
 │                                         │
 │  Application Properties                 │
-│  ├─ JWT Secret: bezKoderSecretKey       │
-│  ├─ JWT Expiration: 86400000ms (24h)    │
-│  ├─ Database: PostgreSQL (via network)  │
+│  ├─ JWT Secret: Base64-encoded          │
+│  ├─ JWT Expiration: 900000ms (15min)    │
+│  ├─ Database: PostgreSQL 16 (via net)   │
+│  ├─ Redis: Token blacklist              │
 │  └─ CORS: enabled for all origins       │
 └────────────────────────────────────────┘
         ▲

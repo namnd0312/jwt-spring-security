@@ -1,12 +1,11 @@
 # spring-boot-docker/docker-compose.yml
-version: "3.7"
 services:
   postgres-service:
-    image: 'postgres:13.1-alpine'
+    image: 'postgres:16-alpine'
     ports:
       - "5432:5432"
     volumes:
-      - /Users/admin/Desktop/DEV/DOCKER/docker-volumes:/var/lib/docker/volumes/postgres/_data
+      - postgres-data:/var/lib/postgresql/data
     networks:
       - my-net
     restart: unless-stopped
@@ -42,3 +41,6 @@ services:
 networks:
   my-net:
     driver: bridge
+
+volumes:
+  postgres-data:

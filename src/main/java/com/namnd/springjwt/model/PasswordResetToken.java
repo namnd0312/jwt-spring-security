@@ -2,7 +2,7 @@ package com.namnd.springjwt.model;
 
 import lombok.Data;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 import java.util.Date;
 
 @Data

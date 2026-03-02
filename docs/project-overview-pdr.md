@@ -121,11 +121,12 @@ JWT Spring Security is a Spring Boot-based REST API providing stateless authenti
 
 | Constraint | Specification | Rationale |
 |-----------|---------------|-----------|
-| Java Version | 1.8 source, 11 runtime | Compatibility with legacy systems |
-| Spring Boot | 2.6.4 (LTS baseline) | Stability, active maintenance |
-| Database | PostgreSQL 13.1+ | Relational model, JSONB support |
-| JWT Library | JJWT 0.9.0 | Lightweight, industry-standard |
-| Packaging | WAR (with fallback JAR) | Tomcat deployment flexibility |
+| Java Version | 21 | Latest LTS, modern features (records, sealed classes, pattern matching) |
+| Spring Boot | 3.4.3 | Latest LTS, Java 21 support, virtual threads ready |
+| Spring Security | 6.x | New SecurityFilterChain pattern, @EnableMethodSecurity |
+| Database | PostgreSQL 16 | Advanced features, JSON/JSONB, improved performance |
+| JWT Library | JJWT 0.12.6 (3 artifacts) | Modular design, modern API, async support |
+| Packaging | JAR | Streamlined deployment, embedded Tomcat |
 | Token Algorithm | HS512 | Deterministic, fast, symmetric |
 | Session Policy | STATELESS | Matches JWT stateless design |
 
@@ -374,17 +375,22 @@ Response (403 Forbidden):
 
 | Library | Version | Purpose |
 |---------|---------|---------|
-| Spring Boot | 2.6.4 | Framework |
-| Spring Security | via Spring Boot | Authentication |
+| Spring Boot | 3.4.3 | Framework |
+| Spring Security | 6.x (via Spring Boot) | Authentication/Authorization |
 | Spring Data JPA | via Spring Boot | ORM |
-| JJWT | 0.9.0 | JWT handling |
+| JJWT | 0.12.6 (jjwt-api, jjwt-impl, jjwt-jackson) | JWT handling (3 split artifacts) |
 | PostgreSQL Driver | latest | Database |
-| Lombok | latest | Boilerplate reduction |
+| Lombok | BOM-managed | Boilerplate reduction (JDK 21 compatible) |
 | BCrypt | via Spring Security | Password encoding |
+| Jakarta EE | 10+ | Namespace migration from javax.* |
 
-**Known Limitations:**
-- JJWT 0.9.0 is stable but newer versions available (0.11.x, 0.12.x)
-- Spring Boot 2.6.4 LTS (newer 3.x available with Java 17+ requirement)
+**Key Upgrades:**
+- Java 1.8 → 21: LTS release with significant performance & language improvements
+- Spring Boot 2.6.4 → 3.4.3: Jakarta EE namespace, new security patterns, virtual thread support
+- Spring Security 5.x → 6.x: SecurityFilterChain bean pattern, @EnableMethodSecurity replaces @EnableGlobalMethodSecurity
+- JJWT 0.9.0 → 0.12.6: Modular artifacts (api, impl, jackson), modern async API
+- PostgreSQL 13.1 → 16: Performance improvements, JSON enhancements
+- Docker: openjdk:11 → eclipse-temurin:21-jre-alpine
 
 ## Configuration Parameters
 
